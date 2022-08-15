@@ -1,0 +1,1 @@
+Checks: 'clang-analyzer-*,readability-*,portability-*,modernize-*,cert-*,cppcoreguidelines-*,-modernize-use-trailing-return-type,-readability-implicit-bool-conversion,-readability-qualified-auto'

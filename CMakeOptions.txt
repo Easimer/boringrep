@@ -1,0 +1,3 @@
+include(CMakeDependentOption)
+
+cmake_dependent_option(GREP_SHARED "Build grep as a shared library" ON NOT WIN32 OFF)
