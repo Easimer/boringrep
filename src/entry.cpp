@@ -192,17 +192,27 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
 
           {
             ZoneScopedN("LookupLineIndex");
-            // Lookup line index
-            size_t idxLine;
-            for (idxLine = 0; idxLine < lineInfos.size(); idxLine++) {
-              auto &line = lineInfos[idxLine];
-              if (line.offStart <= m.offStart && m.offStart < line.offEnd) {
-                m.idxLine = idxLine;
-                m.idxColumn = m.offStart - line.offStart;
+            // Lookup line index by binary search
+            size_t idxLeft = 0;
+            size_t idxRight = lineInfos.size() - 1;
+            size_t idxMiddle;
+            LineInfo *line;
+
+            while (idxLeft <= idxRight) {
+              idxMiddle = (idxLeft + idxRight) / 2;
+              line = &lineInfos[idxMiddle];
+              if (m.offStart < line->offStart) {
+                idxRight = idxMiddle;
+              } else if (line->offEnd < m.offStart) {
+                idxLeft = idxMiddle;
+              } else {
                 break;
               }
             }
-            assert(idxLine != lineInfos.size());
+
+            m.idxLine = idxMiddle;
+            m.idxColumn = m.offStart - line->offStart;
+            assert(idxMiddle != lineInfos.size());
           }
 
           // TODO(danielm): groups
