@@ -18,6 +18,12 @@ FetchContent_Declare(
 	GIT_TAG 3.1
 )
 
-FetchContent_MakeAvailable(raygui)
+FetchContent_Declare(
+	tracy	
+    GIT_REPOSITORY https://github.com/wolfpld/tracy
+	GIT_TAG v0.8.2
+)
+
+FetchContent_MakeAvailable(raygui tracy)
 
 add_subdirectory(src)

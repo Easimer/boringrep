@@ -13,6 +13,8 @@ target_link_libraries(boringrep
     CONAN_PKG::mio
     CONAN_PKG::fmt
     CONAN_PKG::raylib
+
+    Tracy::TracyClient
 )
 
 target_precompile_headers(boringrep
