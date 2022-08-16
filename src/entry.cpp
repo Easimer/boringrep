@@ -1,29 +1,24 @@
+
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 
 #include <cassert>
-#include <string>
 #include <filesystem>
-#include <thread>
-#include <mutex>
-#include <queue>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <queue>
+#include <string>
+#include <thread>
 
 #include <fmt/core.h>
 #include <mio/mmap.hpp>
 
-struct LineInfo {
-  size_t offStart;
-  size_t offEnd;
-};
+#include "data.hpp"
+#include "ui.hpp"
 
-struct Match {
-  size_t offStart;
-  size_t offEnd;
-
-  size_t idxLine;
-  size_t idxColumn;
+struct MatchThreadInput {
+  std::string path;
 };
 
 struct MatchThreadResult {
@@ -31,10 +26,6 @@ struct MatchThreadResult {
   mio::mmap_source content;
   std::vector<Match> matches;
   std::vector<LineInfo> lineInfo;
-};
-
-struct MatchThreadInput {
-  std::string path;
 };
 
 struct MatchThreadConstants {
@@ -51,7 +42,6 @@ struct MatchThreadConstants {
 
 static void threadprocMatch(MatchThreadConstants *constants) {
   bool shutdown = false;
-  fmt::print("Thread startup\n");
 
   while (!shutdown) {
     std::unique_lock L(constants->lockInputs);
@@ -62,7 +52,6 @@ static void threadprocMatch(MatchThreadConstants *constants) {
     auto input = std::move(constants->inputs.front());
     constants->inputs.pop();
     L.unlock();
-    fmt::print("Thread received path '{}'\n", input.path);
 
     if (input.path.empty()) {
       shutdown = true;
@@ -76,7 +65,8 @@ static void threadprocMatch(MatchThreadConstants *constants) {
       fmt::print("mmap failure\n");
       continue;
     }
-    auto *matchData = pcre2_match_data_create_from_pattern(constants->pattern, nullptr);
+    auto *matchData =
+        pcre2_match_data_create_from_pattern(constants->pattern, nullptr);
     size_t offset = 0;
     int rc;
     std::vector<Match> matches;
@@ -168,11 +158,12 @@ static void threadprocMatch(MatchThreadConstants *constants) {
       constants->results.push_back(std::move(result));
     }
   }
-
-  fmt::print("Thread exiting\n");
 }
 
-int main(int argc, char **argv) {
+static bool DoGrep(GrepState &state,
+                   const std::string &pathRoot,
+                   const std::string &patternFilename,
+                   const std::string &pattern) {
   MatchThreadConstants constants;
   std::vector<std::thread> threads;
 
@@ -182,7 +173,7 @@ int main(int argc, char **argv) {
       (PCRE2_SPTR8) "class", PCRE2_ZERO_TERMINATED, 0, &rc, &offError, nullptr);
   if (!constants.pattern) {
     fmt::print("pcre2_compile failed rc={} offset={}\n", rc, offError);
-    return -1;
+    return false;
   }
 
   constants.aborted = false;
@@ -191,11 +182,9 @@ int main(int argc, char **argv) {
     threads.push_back(std::thread(threadprocMatch, &constants));
   }
 
-  fmt::print("Enumerating paths\n");
-  auto cwd = std::filesystem::current_path();
   std::queue<std::filesystem::path> paths;
 
-  paths.push(cwd);
+  paths.push(std::filesystem::path(pathRoot));
 
   while (!paths.empty()) {
     auto &P = paths.front();
@@ -215,7 +204,6 @@ int main(int argc, char **argv) {
     paths.pop();
   }
 
-  fmt::print("pushing poison pills\n");
   {
     std::lock_guard G(constants.lockInputs);
     for (auto &thread : threads) {
@@ -223,7 +211,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fmt::print("waiting on threads\n");
   for (auto &thread : threads) {
     thread.join();
   }
@@ -239,10 +226,54 @@ int main(int argc, char **argv) {
       assert(match.offEnd < result.content.size());
       auto &line = result.lineInfo[match.idxLine];
       fmt::string_view lineContent(pContent + line.offStart,
-                            line.offEnd - line.offStart - 1);
+                                   line.offEnd - line.offStart - 1);
       fmt::print("  line {}: '{}'\n", match.idxLine + 1, lineContent);
     }
   }
 
+  return true;
+}
+
+struct UI_DataSourceImpl : UI_DataSource {
+  std::queue<UI_State> states;
+
+  bool shutdown = false;
+  std::condition_variable cv;
+  std::mutex lock;
+};
+
+const UI_State *uiGetCurrentState(void *user) {
+  auto *state = (UI_DataSourceImpl *)user;
+  return nullptr;
+}
+
+void uiDiscardOldestState(void *user) {
+  auto *state = (UI_DataSourceImpl *)user;
+  state->states.pop();
+}
+
+void uiExit(void *user) {
+  auto *state = (UI_DataSourceImpl *)user;
+
+  std::unique_lock L(state->lock);
+  state->shutdown = true;
+  state->cv.notify_one();
+}
+
+int main(int argc, char **argv) {
+  UI_DataSourceImpl dataSource;
+
+  dataSource.exit = &uiExit;
+  dataSource.discardOldestState = &uiDiscardOldestState;
+  dataSource.getCurrentState = &uiGetCurrentState;
+
+  UI_Init(&dataSource, &dataSource);
+
+  while (!dataSource.shutdown) {
+    std::unique_lock L(dataSource.lock);
+    dataSource.cv.wait(L);
+  }
+
+  UI_Finish();
   return 0;
 }
