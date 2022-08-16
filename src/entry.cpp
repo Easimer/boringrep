@@ -1,6 +1,7 @@
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 
+#include <cassert>
 #include <string>
 #include <filesystem>
 #include <thread>
@@ -11,6 +12,11 @@
 
 #include <fmt/core.h>
 #include <mio/mmap.hpp>
+
+struct LineInfo {
+  size_t offStart;
+  size_t offEnd;
+};
 
 struct Match {
   size_t offStart;
@@ -24,6 +30,7 @@ struct MatchThreadResult {
   std::string path;
   mio::mmap_source content;
   std::vector<Match> matches;
+  std::vector<LineInfo> lineInfo;
 };
 
 struct MatchThreadInput {
@@ -74,8 +81,11 @@ static void threadprocMatch(MatchThreadConstants *constants) {
     int rc;
     std::vector<Match> matches;
 
+    std::vector<LineInfo> lineInfos;
+    const auto *pContents = (uint8_t *)mmap.data();
+
     do {
-      rc = pcre2_match(constants->pattern, (PCRE2_SPTR8)mmap.data(), mmap.size(), offset,
+      rc = pcre2_match(constants->pattern, pContents, mmap.size(), offset,
                        PCRE2_NOTBOL | PCRE2_NOTEOL, matchData, nullptr);
       if (rc < 0) {
         switch (rc) {
@@ -86,6 +96,24 @@ static void threadprocMatch(MatchThreadConstants *constants) {
             break;
         }
       } else {
+        if (lineInfos.empty()) {
+          size_t offCursor = 0;
+          const size_t offEnd = mmap.size();
+
+          LineInfo currentLine;
+          currentLine.offStart = offCursor;
+
+          while (offCursor != offEnd) {
+            if (pContents[offCursor] == '\n') {
+              currentLine.offEnd = offCursor;
+              lineInfos.push_back(currentLine);
+              currentLine.offStart = offCursor + 1;
+            }
+
+            offCursor += 1;
+          }
+        }
+
         auto ovector = pcre2_get_ovector_pointer(matchData);
 
         if (constants->aborted) {
@@ -93,19 +121,31 @@ static void threadprocMatch(MatchThreadConstants *constants) {
           break;
         }
 
+        // TODO(danielm): compute line/col
+        Match m;
+        m.offStart = ovector[0];
+        m.offEnd = ovector[1];
+
+        // Lookup line index
+        for (size_t idxLine = 0; idxLine < lineInfos.size(); idxLine++) {
+          auto &line = lineInfos[idxLine];
+          if (line.offStart <= m.offStart && m.offStart < line.offEnd) {
+            m.idxLine = idxLine;
+            m.idxColumn = m.offStart - line.offStart;
+            break;
+          }
+        }
+
+        // TODO(danielm): groups
         for (int i = 0; i < rc; i++) {
           PCRE2_SPTR substring_start =
               (PCRE2_SPTR8)mmap.data() + ovector[2 * i];
           PCRE2_SIZE substring_length = ovector[2 * i + 1] - ovector[2 * i];
 
           auto s = std::string((const char *)substring_start, substring_length);
-
-          // TODO(danielm): compute line/col
-          Match m;
-          m.offStart = ovector[0];
-          m.offEnd = ovector[1];
-          matches.push_back(m);
         }
+
+        matches.push_back(m);
 
         offset = ovector[1];
       }
@@ -123,6 +163,7 @@ static void threadprocMatch(MatchThreadConstants *constants) {
       result.content = std::move(mmap);
       result.path = std::move(input.path);
       result.matches = std::move(matches);
+      result.lineInfo = std::move(lineInfos);
       std::lock_guard G(constants->lockResults);
       constants->results.push_back(std::move(result));
     }
@@ -190,11 +231,17 @@ int main(int argc, char **argv) {
   pcre2_code_free(constants.pattern);
 
   for (const auto &result : constants.results) {
-      fmt::print("{}\n", result.path);
+    fmt::print("{}\n", result.path);
+    auto *pContent = result.content.data();
     for (auto &match : result.matches) {
-      fmt::print("  from {} to {}\n", match.offStart, match.offEnd);
+      assert(match.idxLine < result.lineInfo.size());
+      assert(match.offStart < result.content.size());
+      assert(match.offEnd < result.content.size());
+      auto &line = result.lineInfo[match.idxLine];
+      fmt::string_view lineContent(pContent + line.offStart,
+                            line.offEnd - line.offStart - 1);
+      fmt::print("  line {}: '{}'\n", match.idxLine + 1, lineContent);
     }
-  
   }
 
   return 0;
