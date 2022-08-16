@@ -31,6 +31,7 @@ struct MatchThreadInput {
 
 struct MatchThreadConstants {
   pcre2_code *pattern;
+  bool aborted;
 
   std::mutex lockResults;
   std::vector<MatchThreadResult> results;
@@ -86,6 +87,11 @@ static void threadprocMatch(MatchThreadConstants *constants) {
       } else {
         auto ovector = pcre2_get_ovector_pointer(matchData);
 
+        if (constants->aborted) {
+          shutdown = true;
+          break;
+        }
+
         for (int i = 0; i < rc; i++) {
           PCRE2_SPTR substring_start =
               (PCRE2_SPTR8)mmap.data() + ovector[2 * i];
@@ -101,6 +107,11 @@ static void threadprocMatch(MatchThreadConstants *constants) {
         }
 
         offset = ovector[1];
+      }
+
+      if (constants->aborted) {
+        shutdown = true;
+        break;
       }
     } while (rc > 0);
 
@@ -131,6 +142,8 @@ int main(int argc, char **argv) {
     fmt::print("pcre2_compile failed rc={} offset={}\n", rc, offError);
     return -1;
   }
+
+  constants.aborted = false;
 
   for (int i = 0; i < 8; i++) {
     threads.push_back(std::thread(threadprocMatch, &constants));
