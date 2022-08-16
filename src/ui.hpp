@@ -11,20 +11,30 @@ struct UI_File {
 
   const uint8_t *bufContent;
   size_t lenContent;
+
+  std::vector<std::string> uiCache;
 };
 
-struct UI_State {
-  bool discard;
+enum UI_MatchRequestStatus {
+	UI_MRSPending = 0,
+	UI_MRSFinished,
+	UI_MRSAborted,
+};
+
+struct UI_MatchRequestState {
+  UI_MatchRequestStatus status;
   std::mutex lockFiles;
   std::vector<UI_File> files;
 };
 
 using UI_PfnExit = void (*)(void* user);
-using UI_PfnGetCurrentState = const UI_State* (*)(void* user);
+using UI_PfnPutRequest = void (*)(void* user, GrepRequest &&request);
+using UI_PfnGetCurrentState = UI_MatchRequestState* (*)(void* user);
 using UI_PfnDiscardOldestState = void (*)(void* user);
 
 struct UI_DataSource {
   UI_PfnExit exit;
+  UI_PfnPutRequest putRequest;
   UI_PfnGetCurrentState getCurrentState;
   UI_PfnDiscardOldestState discardOldestState;
 };

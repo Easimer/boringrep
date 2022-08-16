@@ -24,3 +24,8 @@ struct FileResult {
 struct GrepState {
 };
 
+struct GrepRequest {
+  std::string pathRoot;
+  std::string patternFilename;
+  std::string pattern;
+};
