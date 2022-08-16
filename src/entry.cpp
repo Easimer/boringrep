@@ -21,6 +21,10 @@
 
 #include <Tracy.hpp>
 
+enum {
+  SIZ_INPUT_BACKLOG = 8,
+};
+
 struct MatchThreadInput {
   std::string path;
 };
@@ -39,22 +43,19 @@ struct MatchRequestStateAndContent {
 
 template <typename T>
 struct Pipe {
-  std::mutex mtx;
-  std::condition_variable cv;
+  TracyLockable(std::mutex, mtx);
+  std::condition_variable_any cv;
   std::queue<std::optional<T>> queue;
 
   auto lock() { return std::unique_lock(mtx); }
   auto empty() const { return queue.empty(); }
-  auto wait(std::unique_lock<std::mutex> &L) { cv.wait(L); }
+  auto wait(std::unique_lock<LockableBase(std::mutex)> &L) { cv.wait(L); }
   auto &front() { return queue.front(); }
   auto pop() { queue.pop(); }
   auto notify_one() { cv.notify_one(); }
   auto push(const T &t) { queue.push(t); }
   auto push(T &&t) { queue.push(std::move(t)); }
-  auto push() {
-    fmt::print("push empty {}\n", (void *)this);
-    queue.push(std::nullopt);
-  }
+  auto push() { queue.push(std::nullopt); }
   auto notify_all() { cv.notify_all(); }
 };
 
@@ -66,33 +67,70 @@ struct MatchThreadConstants {
   Pipe<MatchThreadResult> results;
 };
 
-static void threadprocMatch(MatchThreadConstants *constants) {
+static int pcre2_match_w(pcre2_code_8 *code,
+                         const void *contents,
+                         size_t size,
+                         size_t offset,
+                         unsigned flags,
+                         pcre2_match_data_8 *matchData) {
+  ZoneScoped;
+  return pcre2_match(code, (PCRE2_SPTR8)contents, size, offset, flags,
+                     matchData, nullptr);
+}
+
+static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
   ZoneScoped;
   bool shutdown = false;
+  auto threadName = fmt::format("Thread-Match#{}", id);
+  tracy::SetThreadName(threadName.c_str());
+
+  std::queue<std::optional<MatchThreadInput>> localInputQueue;
 
   while (!shutdown) {
-    ZoneScoped;
-    auto L = constants->inputs.lock();
-    while (constants->inputs.empty()) {
-      constants->inputs.wait(L);
+    ZoneScopedN("MapFileAndMatch");
+
+    if (localInputQueue.empty()) {
+      ZoneScopedN("Fetch input");
+      auto L = constants->inputs.lock();
+      while (constants->inputs.empty()) {
+        constants->inputs.wait(L);
+      }
+
+      while (localInputQueue.size() < 2 && !constants->inputs.empty()) {
+        auto &input = constants->inputs.front();
+        localInputQueue.push(std::move(input));
+        constants->inputs.pop();
+        if (!input) {
+          // Found shutdown signal in shared queue
+          break;
+        }
+      }
     }
 
-    auto input = std::move(constants->inputs.front());
-    constants->inputs.pop();
-    L.unlock();
+    if (shutdown) {
+      break;
+    }
+
+    auto input = std::move(localInputQueue.front());
+    localInputQueue.pop();
 
     if (!input) {
       shutdown = true;
-      continue;
+      break;
     }
 
     std::error_code error;
     mio::mmap_source mmap;
-    mmap.map(input->path, error);
-    if (error) {
-      fmt::print("mmap failure\n");
-      continue;
+
+    {
+      ZoneScopedN("mmap'ing");
+      mmap.map(input->path, error);
+      if (error) {
+        fmt::print("mmap failure {} {}\n", input->path, error.message());
+        continue;
+      }
     }
+
     auto *matchData =
         pcre2_match_data_create_from_pattern(constants->pattern, nullptr);
     size_t offset = 0;
@@ -102,90 +140,100 @@ static void threadprocMatch(MatchThreadConstants *constants) {
     std::vector<LineInfo> lineInfos;
     const auto *pContents = (uint8_t *)mmap.data();
 
-    do {
-      ZoneScoped;
+    {
+      ZoneScopedN("Match loop");
       ZoneText(input->path.c_str(), input->path.size());
-      rc = pcre2_match(constants->pattern, pContents, mmap.size(), offset,
-                       PCRE2_NOTBOL | PCRE2_NOTEOL | PCRE2_NOTEMPTY, matchData,
-                       nullptr);
-      if (rc < 0) {
-        switch (rc) {
-          case PCRE2_ERROR_NOMATCH:
-            break;
-          default:
-            fmt::print("Match error {}\n", rc);
-            break;
-        }
-      } else {
-        if (lineInfos.empty()) {
-          ZoneScopedN("Compute line info");
-          size_t offCursor = 0;
-          const size_t offEnd = mmap.size();
+      do {
+        rc = pcre2_match_w(constants->pattern, pContents, mmap.size(), offset,
+                           PCRE2_NOTBOL | PCRE2_NOTEOL | PCRE2_NOTEMPTY,
+                           matchData);
+        if (rc < 0) {
+          switch (rc) {
+            case PCRE2_ERROR_NOMATCH:
+              break;
+            default:
+              fmt::print("Match error {}\n", rc);
+              break;
+          }
+        } else {
+          if (lineInfos.empty()) {
+            ZoneScopedN("Compute line info");
+            size_t offCursor = 0;
+            const size_t offEnd = mmap.size();
 
-          LineInfo currentLine;
-          currentLine.offStart = offCursor;
+            LineInfo currentLine;
+            currentLine.offStart = offCursor;
 
-          while (offCursor != offEnd) {
-            if (pContents[offCursor] == '\n') {
-              currentLine.offEnd = offCursor;
-              lineInfos.push_back(currentLine);
-              currentLine.offStart = offCursor + 1;
+            while (offCursor != offEnd) {
+              if (pContents[offCursor] == '\n') {
+                currentLine.offEnd = offCursor;
+                lineInfos.push_back(currentLine);
+                currentLine.offStart = offCursor + 1;
+              }
+
+              offCursor += 1;
             }
 
-            offCursor += 1;
-          }
-
-          if (lineInfos.empty()) {
+            // Last line
             currentLine.offEnd = offEnd;
             lineInfos.push_back(currentLine);
           }
-        }
 
-        auto ovector = pcre2_get_ovector_pointer(matchData);
+          auto ovector = pcre2_get_ovector_pointer(matchData);
+
+          if (constants->aborted) {
+            shutdown = true;
+            break;
+          }
+
+          Match m = {};
+          m.offStart = ovector[0];
+          m.offEnd = ovector[1];
+
+          {
+            ZoneScopedN("LookupLineIndex");
+            // Lookup line index
+            size_t idxLine;
+            for (idxLine = 0; idxLine < lineInfos.size(); idxLine++) {
+              auto &line = lineInfos[idxLine];
+              if (line.offStart <= m.offStart && m.offStart < line.offEnd) {
+                m.idxLine = idxLine;
+                m.idxColumn = m.offStart - line.offStart;
+                break;
+              }
+            }
+            assert(idxLine != lineInfos.size());
+          }
+
+          // TODO(danielm): groups
+          for (int i = 0; i < rc; i++) {
+            PCRE2_SPTR substring_start =
+                (PCRE2_SPTR8)mmap.data() + ovector[2 * i];
+            PCRE2_SIZE substring_length = ovector[2 * i + 1] - ovector[2 * i];
+
+            auto s =
+                std::string((const char *)substring_start, substring_length);
+          }
+
+          assert(m.idxLine < lineInfos.size());
+          assert(m.offStart < mmap.size());
+          assert(m.offEnd <= mmap.size());
+          matches.push_back(m);
+
+          offset = ovector[1];
+        }
 
         if (constants->aborted) {
           shutdown = true;
           break;
         }
-
-        // TODO(danielm): compute line/col
-        Match m;
-        m.offStart = ovector[0];
-        m.offEnd = ovector[1];
-
-        // Lookup line index
-        for (size_t idxLine = 0; idxLine < lineInfos.size(); idxLine++) {
-          auto &line = lineInfos[idxLine];
-          if (line.offStart <= m.offStart && m.offStart < line.offEnd) {
-            m.idxLine = idxLine;
-            m.idxColumn = m.offStart - line.offStart;
-            break;
-          }
-        }
-
-        // TODO(danielm): groups
-        for (int i = 0; i < rc; i++) {
-          PCRE2_SPTR substring_start =
-              (PCRE2_SPTR8)mmap.data() + ovector[2 * i];
-          PCRE2_SIZE substring_length = ovector[2 * i + 1] - ovector[2 * i];
-
-          auto s = std::string((const char *)substring_start, substring_length);
-        }
-
-        matches.push_back(m);
-
-        offset = ovector[1];
-      }
-
-      if (constants->aborted) {
-        shutdown = true;
-        break;
-      }
-    } while (rc > 0);
+      } while (rc > 0);
+    }
 
     pcre2_match_data_free(matchData);
 
     if (matches.size() > 0) {
+      ZoneScopedN("Pushing results");
       MatchThreadResult result;
       result.content = std::move(mmap);
       result.path = std::move(input->path);
@@ -223,35 +271,49 @@ static bool DoGrep(MatchRequestStateAndContent &S,
 
   constants.aborted = false;
 
-  for (int i = 0; i < 8; i++) {
-    threads.push_back(std::thread(threadprocMatch, &constants));
+  for (uint32_t i = 0; i < 8; i++) {
+    threads.push_back(std::thread(threadprocMatch, &constants, i));
   }
 
   std::queue<std::filesystem::path> paths;
 
   paths.push(std::filesystem::path(pathRoot));
 
-  while (!paths.empty()) {
-    ZoneScoped;
-    auto &P = paths.front();
-    for (auto &entry : std::filesystem::directory_iterator(P)) {
-      if (entry.is_directory()) {
-        paths.push(entry.path());
-      }
+  {
+    ZoneScopedN("Enumerate paths");
+    std::vector<MatchThreadInput> inputBacklog;
+    inputBacklog.reserve(threads.size());
 
-      if (entry.is_regular_file()) {
-        {
-          auto L = constants.inputs.lock();
-          constants.inputs.push({entry.path().u8string()});
+    while (!paths.empty()) {
+      auto &P = paths.front();
+      for (auto &entry : std::filesystem::directory_iterator(P)) {
+        if (entry.is_directory()) {
+          paths.push(entry.path());
         }
-        constants.inputs.notify_one();
+
+        if (entry.is_regular_file()) {
+          inputBacklog.push_back({entry.path().u8string()});
+        }
+
+        if (inputBacklog.size() == threads.size()) {
+          auto L = constants.inputs.lock();
+          while (!inputBacklog.empty()) {
+            constants.inputs.push(std::move(inputBacklog.back()));
+            inputBacklog.pop_back();
+          }
+          constants.inputs.notify_all();
+        }
+      }
+      paths.pop();
+    }
+
+    auto L = constants.inputs.lock();
+    if (inputBacklog.size() > 0) {
+      while (!inputBacklog.empty()) {
+        constants.inputs.push(std::move(inputBacklog.back()));
+        inputBacklog.pop_back();
       }
     }
-    paths.pop();
-  }
-
-  {
-    auto L = constants.inputs.lock();
     for (auto &thread : threads) {
       constants.inputs.push();
     }
@@ -260,36 +322,38 @@ static bool DoGrep(MatchRequestStateAndContent &S,
 
   size_t numThreadsRemain = threads.size();
 
-  while (numThreadsRemain != 0) {
-    ZoneScoped;
-    auto L = constants.results.lock();
-    if (constants.results.empty()) {
-      constants.results.wait(L);
-    }
-    if (!constants.results.empty()) {
-      auto result = std::move(constants.results.front());
-      constants.results.pop();
-      L.unlock();
-      if (!result.has_value()) {
-        numThreadsRemain -= 1;
-        continue;
+  {
+    ZoneScopedN("Receiving results");
+    while (numThreadsRemain != 0) {
+      auto L = constants.results.lock();
+      if (constants.results.empty()) {
+        constants.results.wait(L);
       }
+      if (!constants.results.empty()) {
+        auto result = std::move(constants.results.front());
+        constants.results.pop();
+        L.unlock();
+        if (!result.has_value()) {
+          numThreadsRemain -= 1;
+          continue;
+        }
 
-      for (auto &match : result->matches) {
-        assert(match.idxLine < result->lineInfo.size());
-        assert(match.offStart < result->content.size());
-        assert(match.offEnd <= result->content.size());
+        for (auto &match : result->matches) {
+          assert(match.idxLine < result->lineInfo.size());
+          assert(match.offStart < result->content.size());
+          assert(match.offEnd <= result->content.size());
+        }
+
+        UI_File file;
+        file.path = std::move(result->path);
+        file.bufContent = (uint8_t *)result->content.data();
+        file.lenContent = result->content.size();
+        file.lineInfo = std::move(result->lineInfo);
+        file.matches = std::move(result->matches);
+        S.sources[file.path] = std::move(result->content);
+        std::lock_guard G(S.state.lockFiles);
+        S.state.files.push_back(file);
       }
-
-      UI_File file;
-      file.path = std::move(result->path);
-      file.bufContent = (uint8_t *)result->content.data();
-      file.lenContent = result->content.size();
-      file.lineInfo = std::move(result->lineInfo);
-      file.matches = std::move(result->matches);
-      S.sources[file.path] = std::move(result->content);
-      std::lock_guard G(S.state.lockFiles);
-      S.state.files.push_back(file);
     }
   }
 
