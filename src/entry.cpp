@@ -7,6 +7,7 @@
 #include <mutex>
 #include <queue>
 #include <functional>
+#include <optional>
 
 #include <fmt/core.h>
 #include <mio/mmap.hpp>
