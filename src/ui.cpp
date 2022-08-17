@@ -90,6 +90,8 @@ struct UI_InputBox {
   enum Action {
     ACTION_NONE,
     ACTION_APPLY,
+    ACTION_PAGE_DOWN,
+    ACTION_PAGE_UP,
   };
 
   Action Draw(Vector2 pos, Vector2 size) {
@@ -122,9 +124,23 @@ struct UI_InputBox {
           case KEY_TAB:
             if (idxEditedField) {
               idxEditedField = (*idxEditedField + 1) % BUF_MAX;
-            } else {
-              idxEditedField = 0;
             }
+            break;
+        }
+        keyPressed = GetKeyPressed();
+      }
+    } else {
+      auto keyPressed = GetKeyPressed();
+      while (keyPressed != 0) {
+        switch (keyPressed) {
+          case KEY_TAB:
+            idxEditedField = 0;
+            break;
+          case KEY_PAGE_DOWN:
+            ret = ACTION_PAGE_DOWN;
+            break;
+          case KEY_PAGE_UP:
+            ret = ACTION_PAGE_UP;
             break;
         }
         keyPressed = GetKeyPressed();
@@ -146,7 +162,7 @@ struct UI_InputBox {
                  2, textColor);
     }
 
-    return ACTION_NONE;
+    return ret;
   }
 
   Rectangle GetButtonRect(const Vector2 &pos, const Vector2 &size, int idx) {
@@ -211,46 +227,40 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
 
     bool inputChanged = false;
 
-    inputBox.Draw({10, 10}, {(float)GetScreenWidth(), 256});
+    auto action = inputBox.Draw({10, 10}, {(float)GetScreenWidth(), 256});
 
-    // if (GuiTextBox({10, 8, 256, 24}, bufPath, LEN_BUF_PATH, editPath)) {
-    //   editPath = !editPath;
-    //   inputChanged = true;
-    // }
-
-    // if (GuiTextBox({10, 80, 256, 24}, bufFilenamePattern,
-    //                LEN_BUF_FILENAME_PATTERN, editFilenamePattern)) {
-    //   editFilenamePattern = !editFilenamePattern;
-    //   inputChanged = true;
-    // }
-
-    // if (GuiTextBox({10, 152, 256, 24}, bufPattern, LEN_BUF_PATTERN,
-    //                editPattern)) {
-    //   editPattern = !editPattern;
-    //   inputChanged = true;
-    // }
-
-    if (inputChanged) {
-      ZoneScoped;
-      const UI_MatchRequestState *state = nullptr;
-      bool finished = false;
-      do {
+    switch (action) {
+      case UI_InputBox::ACTION_APPLY: {
         ZoneScoped;
-        state = dataSource->getCurrentState(user);
-        if (state) {
-          finished = state->status == UI_MRSFinished;
-          if (finished) {
-            dataSource->discardOldestState(user);
+        const UI_MatchRequestState *state = nullptr;
+        bool finished = false;
+        do {
+          ZoneScoped;
+          state = dataSource->getCurrentState(user);
+          if (state) {
+            finished = state->status == UI_MRSFinished;
+            if (finished) {
+              dataSource->discardOldestState(user);
+            }
           }
-        }
-      } while (state && finished);
+        } while (state && finished);
 
-      GrepRequest request;
-      request.pathRoot = inputBox.buffers[UI_InputBox::BUF_PATH].c_str();
-      request.patternFilename =
-          inputBox.buffers[UI_InputBox::BUF_FILENAME_PATTERN].c_str();
-      request.pattern = inputBox.buffers[UI_InputBox::BUF_PATTERN].c_str();
-      dataSource->putRequest(user, std::move(request));
+        GrepRequest request;
+        request.pathRoot = inputBox.buffers[UI_InputBox::BUF_PATH].c_str();
+        request.patternFilename =
+            inputBox.buffers[UI_InputBox::BUF_FILENAME_PATTERN].c_str();
+        request.pattern = inputBox.buffers[UI_InputBox::BUF_PATTERN].c_str();
+        dataSource->putRequest(user, std::move(request));
+        break;
+      }
+      case UI_InputBox::ACTION_PAGE_DOWN: {
+        scrollY += 200;
+        break;
+      }
+      case UI_InputBox::ACTION_PAGE_UP: {
+        scrollY -= 200;
+        break;
+      }
     }
 
     auto *state = dataSource->getCurrentState(user);
