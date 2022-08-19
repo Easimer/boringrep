@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <map>
+#include <unordered_set>
 
 #include <raylib.h>
 #define RAYGUI_IMPLEMENTATION
@@ -245,6 +246,66 @@ struct EditableUtf8String {
   bool IsEmpty() const { return offEnd == 0; }
 };
 
+struct DirectoryFilter {
+  DirectoryFilter(const std::filesystem::path &root) {
+    for (auto &entry : std::filesystem::directory_iterator(root)) {
+      if (entry.is_directory()) {
+        subDirectories.push_back(entry);
+      }
+    }
+  }
+
+  void Update(const std::string &filter) {
+    filteredEntries.clear();
+    for (size_t idxEntry = 0; idxEntry < subDirectories.size(); idxEntry++) {
+      auto &entry = subDirectories[idxEntry];
+      auto name = entry.path().filename().u8string();
+      for (size_t i = 0; i < filter.size() && i < name.size(); i++) {
+        if (name[i] != filter[i]) {
+          filteredEntries.insert(idxEntry);
+          break;
+        }
+      }
+    }
+  }
+
+  bool GetNextEntry(size_t &out, size_t i) const {
+    if (filteredEntries.count(i) == 0) {
+      return false;
+    }
+
+    out++;
+    while (out < subDirectories.size()) {
+      if (filteredEntries.count(out) == 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool GetPrevEntry(size_t &out, size_t i) const {
+    if (filteredEntries.count(i) == 0) {
+      return false;
+    }
+    //
+
+    out--;
+    while (0 < out) {
+      if (filteredEntries.count(out) == 0) {
+        return true;
+      }
+    }
+
+    assert(out == 0);
+
+    return filteredEntries.count(0) == 0;
+  }
+
+  std::vector<std::filesystem::directory_entry> subDirectories;
+  std::unordered_set<size_t> filteredEntries;
+};
+
 struct BaseInputBox {
   bool isActive = false;
 
@@ -322,6 +383,7 @@ struct PathInputBox : BaseInputBox {
   EditableUtf8String buf;
 
   std::optional<std::string> _fullPathCache;
+  std::optional<DirectoryFilter> filter;
 
   bool dirDoesntExist = false;
   bool isFinderOpen = false;
@@ -357,6 +419,7 @@ struct PathInputBox : BaseInputBox {
         if (buf.IsEmpty()) {
           if (path.has_parent_path()) {
             isFinderOpen = true;
+            filter = DirectoryFilter(path);
             auto parentPath = path.parent_path();
             if (parentPath == path && path.has_root_name()) {
               auto elem = path.root_name();
@@ -372,6 +435,7 @@ struct PathInputBox : BaseInputBox {
           }
         } else {
           buf.DeleteChar();
+          filter->Update(buf.c_str());
           return true;
         }
         break;
@@ -387,6 +451,7 @@ struct PathInputBox : BaseInputBox {
         if (!ec && status.type() == std::filesystem::file_type::directory) {
           path = newPath;
           isFinderOpen = false;
+          filter.reset();
           buf.Clear();
         } else {
           dirDoesntExist = true;
@@ -406,9 +471,11 @@ struct PathInputBox : BaseInputBox {
 
     if (!isFinderOpen && buf.IsEmpty()) {
       isFinderOpen = true;
+      filter = DirectoryFilter(path);
     }
 
     buf.Append(codepoint);
+    filter->Update(buf.c_str());
 
     return true;
   }
@@ -417,10 +484,27 @@ struct PathInputBox : BaseInputBox {
   Color GetFinderBorderColor() { return DARKGRAY; }
 
   void DrawFinder(Font font, Rectangle rect) {
+    assert(filter.has_value());
     DrawRectangle(rect.x, rect.y, rect.width, rect.height,
                   GetFinderBackgroundColor());
     DrawRectangleLines(rect.x, rect.y, rect.width, rect.height,
                        GetFinderBorderColor());
+
+    float y = rect.y + 2;
+    for (size_t i = 0; i < filter->subDirectories.size(); i++) {
+      if (filter->filteredEntries.count(i) != 0)
+        continue;
+      auto &entry = filter->subDirectories[i];
+      auto path = entry.path().filename().u8string();
+      auto t = MeasureTextEx(font, path.c_str(), TEXT_HEIGHT, 2);
+
+      if (y + t.y >= rect.y + rect.height) {
+        break;
+      }
+
+      DrawTextEx(font, path.c_str(), {rect.x + 2, y}, TEXT_HEIGHT, 2, BLACK);
+      y += t.y;
+    }
   }
 
   void Draw(UI_RenderLayers &layers,
