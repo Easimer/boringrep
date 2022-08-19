@@ -115,13 +115,13 @@ struct UI_RenderLayers {
   }
 };
 
-struct InputBoxString {
+struct EditableUtf8String {
   std::vector<uint8_t> buf = {0};
   // Points at the null-terminator
   size_t offEnd = 0;
 
-  InputBoxString() {}
-  InputBoxString(const std::string &s) {
+  EditableUtf8String() {}
+  EditableUtf8String(const std::string &s) {
     buf.resize(s.size() + 1);
     offEnd = s.size();
     memcpy(buf.data(), s.data(), s.size());
@@ -274,7 +274,7 @@ struct BaseInputBox {
 };
 
 struct InputBox : BaseInputBox {
-  InputBoxString buf;
+  EditableUtf8String buf;
 
   std::string GetString() override { return buf.c_str(); }
 
@@ -319,7 +319,7 @@ struct InputBox : BaseInputBox {
 struct PathInputBox : BaseInputBox {
   std::filesystem::path path;
 
-  InputBoxString buf;
+  EditableUtf8String buf;
 
   std::optional<std::string> _fullPathCache;
 
@@ -360,12 +360,12 @@ struct PathInputBox : BaseInputBox {
             auto parentPath = path.parent_path();
             if (parentPath == path && path.has_root_name()) {
               auto elem = path.root_name();
-              buf = InputBoxString(elem.u8string());
+              buf = EditableUtf8String(elem.u8string());
               path = std::filesystem::path();
             } else {
               // Pop off last directory from the path
               auto elem = path.filename();
-              buf = InputBoxString(elem.u8string());
+              buf = EditableUtf8String(elem.u8string());
               path = parentPath;
             }
             return true;
