@@ -305,9 +305,9 @@ struct PathMatcher {
   }
 };
 
-static bool DoGrep(MatchRequestStateAndContent &S,
-                   const std::string &pathRoot,
-                   const std::string &patternFilename) {
+static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
+                                    const std::string &pathRoot,
+                                    const std::string &patternFilename) {
   ZoneScoped;
 
   std::string errMsg;
@@ -316,7 +316,7 @@ static bool DoGrep(MatchRequestStateAndContent &S,
 
   if (!pathMatcher) {
     fmt::print("Failed to make path matcher: {}\n", errMsg);
-    return false;
+    return UI_MRSBadFilenamePattern;
   }
 
   std::queue<std::filesystem::path> paths;
@@ -345,13 +345,13 @@ static bool DoGrep(MatchRequestStateAndContent &S,
 
   S.state.status = UI_MRSFinished;
 
-  return true;
+  return UI_MRSFinished;
 }
 
-static bool DoGrep(MatchRequestStateAndContent &S,
-                   const std::string &pathRoot,
-                   const std::string &patternFilename,
-                   const std::string &pattern) {
+static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
+                                    const std::string &pathRoot,
+                                    const std::string &patternFilename,
+                                    const std::string &pattern) {
   ZoneScoped;
   MatchThreadConstants constants;
   std::vector<std::thread> threads;
@@ -364,7 +364,7 @@ static bool DoGrep(MatchRequestStateAndContent &S,
 
   if (!pathMatcher) {
     fmt::print("Failed to make path matcher: {}\n", errMsg);
-    return false;
+    return UI_MRSBadFilenamePattern;
   }
 
   int rc;
@@ -373,7 +373,7 @@ static bool DoGrep(MatchRequestStateAndContent &S,
                                     pattern.size(), 0, &rc, &offError, nullptr);
   if (!constants.pattern) {
     fmt::print("pcre2_compile failed rc={} offset={}\n", rc, offError);
-    return false;
+    return UI_MRSBadPattern;
   }
 
   constants.aborted = false;
@@ -481,7 +481,7 @@ static bool DoGrep(MatchRequestStateAndContent &S,
       "DoGrep took {} ms",
       std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
 
-  return true;
+  return UI_MRSFinished;
 }
 
 struct UI_DataSourceImpl : UI_DataSource {
@@ -551,16 +551,17 @@ int main(int argc, char **argv) {
       }
       dataSource.states.emplace_back();
       auto &S = dataSource.states.back();
+      S.state.status = UI_MRSPending;
       auto request = std::move(dataSource.grepRequest.value());
       L.unlock();
       dataSource.grepRequest.reset();
 
       if (request.pattern.empty()) {
-        DoGrep(S, request.pathRoot, request.patternFilename);
+        S.state.status = DoGrep(S, request.pathRoot, request.patternFilename);
       } else {
-        DoGrep(S, request.pathRoot, request.patternFilename, request.pattern);
+        S.state.status = DoGrep(S, request.pathRoot, request.patternFilename,
+                                request.pattern);
       }
-      S.state.status = UI_MRSFinished;
     }
   }
 

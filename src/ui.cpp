@@ -192,6 +192,7 @@ struct DirectoryFilter {
 
 struct BaseInputBox {
   bool isActive = false;
+  bool isInvalid = false;
 
   virtual void Draw(UI_RenderLayers &layers,
                     Font font,
@@ -201,12 +202,18 @@ struct BaseInputBox {
   virtual bool OnKeyPressed(int keycode) = 0;
   virtual std::string GetString() = 0;
   virtual Color GetBackgroundColor() {
+    if (isInvalid) {
+      return RED;
+    }
+
     if (isActive) {
       return BLUE;
     } else {
       return SKYBLUE;
     }
   }
+
+  void SetInvalid(bool isInvalid) { this->isInvalid = isInvalid; }
 
   virtual void Activate(bool v) { isActive = v; }
 
@@ -272,7 +279,7 @@ struct InputBox : BaseInputBox {
 
   void Activate(bool v) override {
     BaseInputBox::Activate(v);
-    
+
     offCursor = buf.ByteLength();
   }
 };
@@ -345,12 +352,19 @@ struct PathInputBox : BaseInputBox {
               auto elem = path.root_name();
               buf = EditableUtf8String(elem.u8string());
               path = std::filesystem::path();
+              fmt::print("reached root, editing path: '{}' buf: '{}'\n",
+                         path.u8string(), buf.c_str());
             } else {
               // Pop off last directory from the path
               auto elem = path.filename();
               buf = EditableUtf8String(elem.u8string());
               path = parentPath;
+              fmt::print("editing path: '{}' buf: '{}'\n", path.u8string(),
+                         buf.c_str());
             }
+
+            finder = FinderState(path);
+            finder->filter.Update(buf.c_str());
             return true;
           }
         } else {
@@ -538,7 +552,7 @@ struct UI_InputBox {
     }
   }
 
-  Action Draw(Vector2 pos, Vector2 size) {
+  Action Draw(const UI_MatchRequestState *state, Vector2 pos, Vector2 size) {
     Action ret = ACTION_NONE;
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (idxEditedField) {
@@ -552,6 +566,15 @@ struct UI_InputBox {
           break;
         }
       }
+    }
+
+    if (state) {
+      inputBoxes[BUF_PATTERN]->SetInvalid(state->status == UI_MRSBadPattern);
+      inputBoxes[BUF_FILENAME_PATTERN]->SetInvalid(state->status ==
+                                                   UI_MRSBadFilenamePattern);
+    } else {
+      inputBoxes[BUF_PATTERN]->SetInvalid(false);
+      inputBoxes[BUF_FILENAME_PATTERN]->SetInvalid(false);
     }
 
     if (idxEditedField) {
@@ -668,7 +691,9 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
 
     bool inputChanged = false;
 
-    auto action = inputBox.Draw({10, 10}, {(float)GetScreenWidth(), 256});
+    auto *state = dataSource->getCurrentState(user);
+    auto action =
+        inputBox.Draw(state, {10, 10}, {(float)GetScreenWidth(), 256});
 
     layers.Execute();
 
@@ -681,7 +706,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
           ZoneScoped;
           state = dataSource->getCurrentState(user);
           if (state) {
-            finished = state->status == UI_MRSFinished;
+            finished = state->status != UI_MRSPending;
             if (finished) {
               dataSource->discardOldestState(user);
             }
@@ -708,7 +733,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
       }
     }
 
-    auto *state = dataSource->getCurrentState(user);
+    state = dataSource->getCurrentState(user);
     if (state) {
       ZoneScoped;
 

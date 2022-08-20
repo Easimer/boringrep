@@ -19,6 +19,9 @@ enum UI_MatchRequestStatus {
 	UI_MRSPending = 0,
 	UI_MRSFinished,
 	UI_MRSAborted,
+	UI_MRSBadFilenamePattern,
+	UI_MRSBadPattern,
+	UI_MRSFailure,
 };
 
 struct UI_MatchRequestState {
