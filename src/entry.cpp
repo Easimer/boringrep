@@ -16,8 +16,8 @@
 #include <fmt/core.h>
 #include <mio/mmap.hpp>
 
-#include "pipe.hpp"
 #include "data.hpp"
+#include "pipe.hpp"
 #include "ui.hpp"
 
 #include <Tracy.hpp>
@@ -243,6 +243,111 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
   constants->results.notify_one();
 }
 
+struct PathMatcher {
+  pcre2_code *code = nullptr;
+  pcre2_match_data *matchData = nullptr;
+  PathMatcher(pcre2_code *code, pcre2_match_data *matchData)
+      : code(code), matchData(matchData) {}
+
+  PathMatcher(const PathMatcher &) = delete;
+  PathMatcher(PathMatcher &&other) : code(nullptr), matchData(nullptr) {
+    std::swap(code, other.code);
+    std::swap(matchData, other.matchData);
+  }
+
+  ~PathMatcher() {
+    pcre2_match_data_free(matchData);
+    pcre2_code_free(code);
+  }
+
+  bool Matches(const std::filesystem::path &path) {
+    auto s = path.u8string();
+    int rc = pcre2_match_w(code, s.data(), s.size(), 0, 0, matchData);
+    if (rc < 0) {
+      switch (rc) {
+        case PCRE2_ERROR_NOMATCH:
+          break;
+        default: {
+          PCRE2_UCHAR8 msg[128];
+          pcre2_get_error_message(rc, msg, 128);
+          fmt::print("Match error {}\n", (const char *)msg);
+          break;
+        }
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  static std::optional<PathMatcher> Make(
+      const std::string &pattern,
+      const std::function<void(const std::string &err)> &onError) {
+    int rc;
+    size_t offError;
+    auto code = pcre2_compile((PCRE2_SPTR8)pattern.c_str(), pattern.size(), 0,
+                              &rc, &offError, nullptr);
+
+    if (code == nullptr) {
+      PCRE2_UCHAR8 buffer[128];
+      pcre2_get_error_message(rc, buffer, 128);
+      onError(std::string((const char *)buffer));
+      return std::nullopt;
+    }
+
+    auto matchData = pcre2_match_data_create_from_pattern(code, nullptr);
+    if (matchData == nullptr) {
+      onError("Internal error");
+      return std::nullopt;
+    }
+
+    return std::optional<PathMatcher>(PathMatcher(code, matchData));
+  }
+};
+
+static bool DoGrep(MatchRequestStateAndContent &S,
+                   const std::string &pathRoot,
+                   const std::string &patternFilename) {
+  ZoneScoped;
+
+  std::string errMsg;
+  auto pathMatcher = PathMatcher::Make(
+      patternFilename, [&](const std::string &err) { errMsg = err; });
+
+  if (!pathMatcher) {
+    fmt::print("Failed to make path matcher: {}\n", errMsg);
+    return false;
+  }
+
+  std::queue<std::filesystem::path> paths;
+
+  paths.push(std::filesystem::path(pathRoot));
+
+  while (!paths.empty()) {
+    auto &P = paths.front();
+    for (auto &entry : std::filesystem::directory_iterator(P)) {
+      if (entry.is_directory()) {
+        paths.push(entry.path());
+      }
+
+      if (entry.is_regular_file()) {
+        UI_File file;
+        auto path = entry.path().u8string();
+        if (pathMatcher->Matches(entry.path().filename())) {
+          std::lock_guard G(S.state.lockFiles);
+          file.path = entry.path().u8string();
+          S.state.files.push_back(std::move(file));
+        }
+      }
+    }
+    paths.pop();
+  }
+
+  S.state.status = UI_MRSFinished;
+
+  return true;
+}
+
 static bool DoGrep(MatchRequestStateAndContent &S,
                    const std::string &pathRoot,
                    const std::string &patternFilename,
@@ -252,6 +357,15 @@ static bool DoGrep(MatchRequestStateAndContent &S,
   std::vector<std::thread> threads;
 
   auto start = std::chrono::high_resolution_clock::now();
+
+  std::string errMsg;
+  auto pathMatcher = PathMatcher::Make(
+      patternFilename, [&](const std::string &err) { errMsg = err; });
+
+  if (!pathMatcher) {
+    fmt::print("Failed to make path matcher: {}\n", errMsg);
+    return false;
+  }
 
   int rc;
   size_t offError;
@@ -285,7 +399,9 @@ static bool DoGrep(MatchRequestStateAndContent &S,
         }
 
         if (entry.is_regular_file()) {
-          inputBacklog.push_back({entry.path().u8string()});
+          if (pathMatcher->Matches(entry.path().filename())) {
+            inputBacklog.push_back({entry.path().u8string()});
+          }
         }
 
         if (inputBacklog.size() == threads.size()) {
@@ -365,26 +481,6 @@ static bool DoGrep(MatchRequestStateAndContent &S,
       "DoGrep took {} ms",
       std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
 
-  // std::vector<UI_File> files;
-  // for (auto &result : constants.results) {
-  //   UI_File file;
-  //   file.path = std::move(result.path);
-  //   files.push_back(std::move(file));
-
-  //   std::lock_guard G(state.lockFiles);
-  //   state.files.push_back(std::move(file));
-  //   auto *pContent = result.content.data();
-  //   for (auto &match : result.matches) {
-  //     assert(match.idxLine < result.lineInfo.size());
-  //     assert(match.offStart < result.content.size());
-  //     assert(match.offEnd <= result.content.size());
-  //     auto &line = result.lineInfo[match.idxLine];
-  //     fmt::string_view lineContent(pContent + line.offStart,
-  //                                  line.offEnd - line.offStart - 1);
-  //     fmt::print("  line {}: '{}'\n", match.idxLine + 1, lineContent);
-  //   }
-  // }
-
   return true;
 }
 
@@ -450,10 +546,6 @@ int main(int argc, char **argv) {
     dataSource.cv.wait(L);
 
     if (dataSource.grepRequest) {
-      if (dataSource.grepRequest->pattern.empty()) {
-        dataSource.grepRequest.reset();
-        continue;
-      }
       for (auto &S : dataSource.states) {
         S.state.status = UI_MRSAborted;
       }
@@ -463,7 +555,11 @@ int main(int argc, char **argv) {
       L.unlock();
       dataSource.grepRequest.reset();
 
-      DoGrep(S, request.pathRoot, request.patternFilename, request.pattern);
+      if (request.pattern.empty()) {
+        DoGrep(S, request.pathRoot, request.patternFilename);
+      } else {
+        DoGrep(S, request.pathRoot, request.patternFilename, request.pattern);
+      }
       S.state.status = UI_MRSFinished;
     }
   }

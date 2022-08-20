@@ -76,14 +76,14 @@ struct EditableUtf8String {
     }
 
     if (offEnd >= 3) {
-      if ((buf[offEnd - 3] & 0xE0) == 0xE0) {
+      if ((buf[offEnd - 3] & 0xF0) == 0xE0) {
         offEnd -= 3;
         goto end;
       }
     }
 
     if (offEnd >= 2) {
-      if ((buf[offEnd - 2] & 0xC0) == 0xC0) {
+      if ((buf[offEnd - 2] & 0xE0) == 0xC0) {
         offEnd -= 2;
         goto end;
       }
@@ -97,40 +97,69 @@ struct EditableUtf8String {
     buf[offEnd] = 0;
   }
 
-  void DeleteWord() {
-    // Find last `ch`
-    size_t idxCur = 0;
-    size_t pos = 0;
-    bool found = false;
-    while (idxCur < offEnd) {
-      if ((buf[idxCur] & 0x80) == 0) {
-        auto cur = SEPARATORS;
-        while (*cur != 0) {
-          if (buf[idxCur] == *cur && pos) {
-            pos = idxCur;
-            found = true;
-            break;
-          }
-        }
-        idxCur += 1;
-      } else if ((buf[idxCur] & 0xC0) == 0xC0) {
-        idxCur += 2;
-      } else if ((buf[idxCur] & 0xC0) == 0xE0) {
-        idxCur += 3;
-      } else if ((buf[idxCur] & 0xC0) == 0xF0) {
-        idxCur += 4;
-      } else {
-        assert(!"invalid utf-8 string");
-        break;
-      }
-    }
-
-    while (pos + 1 < offEnd) {
-      offEnd--;
-    }
-    buf[pos + 1] = 0;
-  }
-
   const char *c_str() const { return (const char *)buf.data(); }
   bool IsEmpty() const { return offEnd == 0; }
+  size_t ByteLength() const { return offEnd; }
+
+  bool OffsetOfPreviousCharacter(size_t &out, size_t offStart) const {
+    if (offStart == 0) {
+      return false;
+    }
+
+    if (offStart > offEnd) {
+      offStart = offEnd;
+    }
+
+    out = offStart;
+    out--;
+    if ((buf[out] & 0x80) == 0) {
+      return true;
+    }
+
+    if (out == 0)
+      return false;
+
+    out--;
+    if ((buf[out] & 0xE0) == 0xC0) {
+      return true;
+    }
+
+    if (out == 0)
+      return false;
+
+    out--;
+    if ((buf[out] & 0xF0) == 0xE0) {
+      return true;
+    }
+
+    if (out == 0)
+      return false;
+
+    out--;
+    if ((buf[out] & 0xF0) == 0xF0) {
+      return true;
+    }
+
+    if (out == 0)
+      return false;
+
+    assert(0);
+    std::abort();
+  }
+
+  size_t ByteLengthOfCharAt(size_t off) {
+    assert(off < offEnd);
+    if ((buf[off] & 0x80) == 0) {
+      return 1;
+    } else if ((buf[off] & 0xE0) == 0xC0) {
+      return 2;
+    } else if ((buf[off] & 0xF0) == 0xE0) {
+      return 3;
+    } else if ((buf[off] & 0xF0) == 0xF0) {
+      return 4;
+    } else {
+      assert(!"invalid utf-8 string");
+      std::abort();
+    }
+  }
 };

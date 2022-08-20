@@ -222,6 +222,7 @@ struct BaseInputBox {
 
 struct InputBox : BaseInputBox {
   EditableUtf8String buf;
+  std::optional<size_t> offCursor;
 
   std::string GetString() override { return buf.c_str(); }
 
@@ -243,6 +244,13 @@ struct InputBox : BaseInputBox {
         buf.DeleteChar();
         return true;
       }
+      case KEY_LEFT: {
+        size_t offNextCursor;
+        if (buf.OffsetOfPreviousCharacter(offNextCursor, *offCursor)) {
+          offCursor = offNextCursor;
+        }
+        return true;
+      }
     }
 
     return false;
@@ -260,6 +268,12 @@ struct InputBox : BaseInputBox {
     DrawTextEx(font, buf.c_str(),
                {rect.x + TEXT_OFFSET.x, rect.y + TEXT_OFFSET.y}, TEXT_HEIGHT, 2,
                textColor);
+  }
+
+  void Activate(bool v) override {
+    BaseInputBox::Activate(v);
+    
+    offCursor = buf.ByteLength();
   }
 };
 
@@ -528,7 +542,7 @@ struct UI_InputBox {
     Action ret = ACTION_NONE;
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (idxEditedField) {
-        inputBoxes[*idxEditedField]->isActive = false;
+        inputBoxes[*idxEditedField]->Activate(false);
         idxEditedField.reset();
       }
       for (int i = 0; i < BUF_MAX; i++) {
