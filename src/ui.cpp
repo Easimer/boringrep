@@ -270,7 +270,7 @@ struct DirectoryFilter {
   }
 
   bool GetNextEntry(size_t &out, size_t i) const {
-    if (filteredEntries.count(i) == 0) {
+    if (filteredEntries.count(i) != 0) {
       return false;
     }
 
@@ -288,7 +288,6 @@ struct DirectoryFilter {
     if (filteredEntries.count(i) == 0) {
       return false;
     }
-    //
 
     out--;
     while (0 < out) {
@@ -300,6 +299,21 @@ struct DirectoryFilter {
     assert(out == 0);
 
     return filteredEntries.count(0) == 0;
+  }
+
+  size_t NumRemains() const {
+    return subDirectories.size() - filteredEntries.size();
+  }
+  std::filesystem::directory_entry GetRemainingEntry() const {
+    assert(NumRemains() == 1);
+    //
+    for (size_t i = 0; i < subDirectories.size(); i++) {
+      if (filteredEntries.count(i) == 0) {
+        return subDirectories[i];
+      }
+    }
+
+    std::abort();
   }
 
   std::vector<std::filesystem::directory_entry> subDirectories;
@@ -323,6 +337,8 @@ struct BaseInputBox {
       return SKYBLUE;
     }
   }
+
+  virtual void Activate(bool v) { isActive = v; }
 
   virtual Color GetBorderColor() { return DARKBLUE; }
 
@@ -377,16 +393,22 @@ struct InputBox : BaseInputBox {
   }
 };
 
+struct FinderState {
+  DirectoryFilter filter;
+  size_t idxSelected = 0;
+
+  FinderState(const std::filesystem::path &path) : filter(path) {}
+};
+
 struct PathInputBox : BaseInputBox {
   std::filesystem::path path;
 
   EditableUtf8String buf;
 
   std::optional<std::string> _fullPathCache;
-  std::optional<DirectoryFilter> filter;
+  std::optional<FinderState> finder;
 
   bool dirDoesntExist = false;
-  bool isFinderOpen = false;
 
   PathInputBox() {}
   PathInputBox(const std::filesystem::path &in_path) : path(in_path) {}
@@ -412,14 +434,28 @@ struct PathInputBox : BaseInputBox {
     return (path / s).u8string();
   }
 
+  void Activate(bool v) override {
+    BaseInputBox::Activate(v);
+
+    if (v) {
+      finder = FinderState(path);
+    } else {
+      finder.reset();
+    }
+  }
+
   bool OnKeyPressed(int keyCode) override {
     switch (keyCode) {
+      case KEY_UP: {
+        if (finder) {
+        }
+        break;
+      }
       case KEY_BACKSPACE: {
         dirDoesntExist = false;
         if (buf.IsEmpty()) {
           if (path.has_parent_path()) {
-            isFinderOpen = true;
-            filter = DirectoryFilter(path);
+            finder = FinderState(path);
             auto parentPath = path.parent_path();
             if (parentPath == path && path.has_root_name()) {
               auto elem = path.root_name();
@@ -434,8 +470,13 @@ struct PathInputBox : BaseInputBox {
             return true;
           }
         } else {
-          buf.DeleteChar();
-          filter->Update(buf.c_str());
+          bool ctrlHeld = IsKeyDown(KEY_LEFT_CONTROL);
+          if (ctrlHeld) {
+            buf.Clear();
+          } else {
+            buf.DeleteChar();
+          }
+          finder->filter.Update(buf.c_str());
           return true;
         }
         break;
@@ -445,17 +486,32 @@ struct PathInputBox : BaseInputBox {
           return false;
         }
 
-        auto newPath = path / std::string(buf.c_str());
-        std::error_code ec;
-        auto status = std::filesystem::status(newPath, ec);
-        if (!ec && status.type() == std::filesystem::file_type::directory) {
-          path = newPath;
-          isFinderOpen = false;
-          filter.reset();
-          buf.Clear();
+        if (finder) {
+          if (finder->filter.NumRemains() == 1) {
+            auto entry = finder->filter.GetRemainingEntry();
+
+            auto newPath = entry.path();
+            std::error_code ec;
+            auto status = std::filesystem::status(newPath, ec);
+            assert(!ec);
+            assert(status.type() == std::filesystem::file_type::directory);
+            path = newPath;
+            finder = FinderState(path);
+            buf.Clear();
+          }
         } else {
-          dirDoesntExist = true;
+          auto newPath = path / std::string(buf.c_str());
+          std::error_code ec;
+          auto status = std::filesystem::status(newPath, ec);
+          if (!ec && status.type() == std::filesystem::file_type::directory) {
+            path = newPath;
+            finder = FinderState(path);
+            buf.Clear();
+          } else {
+            dirDoesntExist = true;
+          }
         }
+
         return true;
       }
     }
@@ -469,13 +525,12 @@ struct PathInputBox : BaseInputBox {
       return false;
     }
 
-    if (!isFinderOpen && buf.IsEmpty()) {
-      isFinderOpen = true;
-      filter = DirectoryFilter(path);
+    if (!finder && buf.IsEmpty()) {
+      finder = FinderState(path);
     }
 
     buf.Append(codepoint);
-    filter->Update(buf.c_str());
+    finder->filter.Update(buf.c_str());
 
     return true;
   }
@@ -484,17 +539,18 @@ struct PathInputBox : BaseInputBox {
   Color GetFinderBorderColor() { return DARKGRAY; }
 
   void DrawFinder(Font font, Rectangle rect) {
-    assert(filter.has_value());
+    assert(finder.has_value());
     DrawRectangle(rect.x, rect.y, rect.width, rect.height,
                   GetFinderBackgroundColor());
     DrawRectangleLines(rect.x, rect.y, rect.width, rect.height,
                        GetFinderBorderColor());
 
     float y = rect.y + 2;
-    for (size_t i = 0; i < filter->subDirectories.size(); i++) {
-      if (filter->filteredEntries.count(i) != 0)
+    auto &filter = finder->filter;
+    for (size_t i = 0; i < filter.subDirectories.size(); i++) {
+      if (filter.filteredEntries.count(i) != 0)
         continue;
-      auto &entry = filter->subDirectories[i];
+      auto &entry = filter.subDirectories[i];
       auto path = entry.path().filename().u8string();
       auto t = MeasureTextEx(font, path.c_str(), TEXT_HEIGHT, 2);
 
@@ -526,6 +582,10 @@ struct PathInputBox : BaseInputBox {
                              TEXT_HEIGHT, 2, textColor);
                 });
 
+    float x = rect.x + TEXT_OFFSET.x + t0.x + 2;
+    float y = rect.y + TEXT_OFFSET.y;
+    Vector2 t1 = t0;
+
     if (!buf.IsEmpty()) {
 #if _WIN32
       // preferred_separator is a wchar_t, blegh
@@ -533,9 +593,7 @@ struct PathInputBox : BaseInputBox {
 #else
       auto strEditedElem = "/" + std::string(buf.c_str());
 #endif
-      float x = rect.x + TEXT_OFFSET.x + t0.x + 2;
-      float y = rect.y + TEXT_OFFSET.y;
-      auto t1 = MeasureTextEx(font, strEditedElem.c_str(), TEXT_HEIGHT, 2);
+      t1 = MeasureTextEx(font, strEditedElem.c_str(), TEXT_HEIGHT, 2);
       layers.Push(LAYER_INPUTBOXES, [this, font, rect,
                                      strEditedElem = move(strEditedElem),
                                      textColor, x, y, t1]() {
@@ -543,29 +601,28 @@ struct PathInputBox : BaseInputBox {
                    textColor);
         DrawLine(x, y + t1.y - 2, x + t1.x, y + t1.y - 2, textColor);
       });
+    }
 
-      if (isFinderOpen) {
-        auto fx = x + t1.x + 1;
-        auto fy = y + t1.y + 1;
-        auto width = GetScreenWidth() / 4;
-        auto height = GetScreenHeight() / 3;
-        if (fx + width >= GetScreenWidth()) {
-          width = GetScreenWidth() - fx;
-        }
-
-        if (fy + height >= GetScreenHeight()) {
-          height = GetScreenHeight() - fy;
-        }
-
-        Rectangle rectFinder;
-        rectFinder.x = fx;
-        rectFinder.y = fy;
-        rectFinder.width = width;
-        rectFinder.height = height;
-        layers.Push(LAYER_INPUTBOXES, [this, font, rectFinder]() {
-          DrawFinder(font, rectFinder);
-        });
+    if (finder) {
+      auto fx = x + t1.x + 1;
+      auto fy = y + t1.y + 1;
+      auto width = GetScreenWidth() / 4;
+      auto height = GetScreenHeight() / 3;
+      if (fx + width >= GetScreenWidth()) {
+        width = GetScreenWidth() - fx;
       }
+
+      if (fy + height >= GetScreenHeight()) {
+        height = GetScreenHeight() - fy;
+      }
+
+      Rectangle rectFinder;
+      rectFinder.x = fx;
+      rectFinder.y = fy;
+      rectFinder.width = width;
+      rectFinder.height = height;
+      layers.Push(LAYER_INPUTBOXES,
+                  [this, font, rectFinder]() { DrawFinder(font, rectFinder); });
     }
   }
 };
@@ -586,14 +643,14 @@ struct UI_InputBox {
 
   void SetEditedField(std::optional<size_t> idx) {
     if (idxEditedField) {
-      inputBoxes[*idxEditedField]->isActive = false;
+      inputBoxes[*idxEditedField]->Activate(false);
       idxEditedField.reset();
     }
 
     idxEditedField = idx;
 
     if (idxEditedField) {
-      inputBoxes[*idxEditedField]->isActive = true;
+      inputBoxes[*idxEditedField]->Activate(true);
     }
   }
 
