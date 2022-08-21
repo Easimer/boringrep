@@ -288,8 +288,8 @@ struct PathInputBox : BaseInputBox {
 
   bool dirDoesntExist = false;
 
-  PathInputBox() {}
-  PathInputBox(const std::filesystem::path &in_path) : path(in_path) {}
+  PathInputBox() = default;
+  PathInputBox(std::filesystem::path in_path) : path(std::move(in_path)) {}
 
   Color GetBackgroundColor() override {
     if (dirDoesntExist) {
@@ -308,8 +308,8 @@ struct PathInputBox : BaseInputBox {
   }
 
   std::string GetString() override {
-    auto s = std::string(buf.c_str());
-    return (path / s).u8string();
+    auto strBuf = std::string(buf.c_str());
+    return (path / strBuf).u8string();
   }
 
   void Activate(bool v) override {
@@ -322,90 +322,93 @@ struct PathInputBox : BaseInputBox {
     }
   }
 
+  bool OnBackspace() {
+    dirDoesntExist = false;
+    if (buf.IsEmpty()) {
+      if (path.has_parent_path()) {
+        finder = FinderState(path);
+        auto parentPath = path.parent_path();
+        if (parentPath == path && path.has_root_name()) {
+          auto elem = path.root_name();
+          buf = EditableUtf8String(elem.u8string());
+          path = std::filesystem::path();
+          fmt::print("reached root, editing path: '{}' buf: '{}'\n",
+                     path.u8string(), buf.c_str());
+        } else {
+          // Pop off last directory from the path
+          auto elem = path.filename();
+          buf = EditableUtf8String(elem.u8string());
+          path = parentPath;
+          fmt::print("editing path: '{}' buf: '{}'\n", path.u8string(),
+                     buf.c_str());
+        }
+
+        finder = FinderState(path);
+        finder->filter.Update(buf.c_str());
+        return true;
+      }
+    } else {
+      bool ctrlHeld = IsKeyDown(KEY_LEFT_CONTROL);
+      if (ctrlHeld) {
+        buf.Clear();
+      } else {
+        buf.DeleteChar();
+      }
+      finder->filter.Update(buf.c_str());
+      return true;
+    }
+    return false;
+  }
+
+  bool OnTab() {
+    if (buf.IsEmpty()) {
+      return false;
+    }
+
+    if (finder) {
+      std::filesystem::directory_entry entry;
+      bool hasEntry = false;
+
+      if (finder->filter.NumRemains() == 1) {
+        entry = finder->filter.GetRemainingEntry();
+        hasEntry = true;
+      } else if (finder->filter.TryGetExactMatch(entry)) {
+        hasEntry = true;
+      }
+
+      if (hasEntry) {
+        auto newPath = entry.path();
+        std::error_code ec;
+        auto status = std::filesystem::status(newPath, ec);
+        assert(!ec);
+        assert(status.type() == std::filesystem::file_type::directory);
+        path = newPath;
+        finder = FinderState(path);
+        buf.Clear();
+      }
+    } else {
+      auto newPath = path / std::string(buf.c_str());
+      std::error_code ec;
+      auto status = std::filesystem::status(newPath, ec);
+      if (!ec && status.type() == std::filesystem::file_type::directory) {
+        path = newPath;
+        finder = FinderState(path);
+        buf.Clear();
+      } else {
+        dirDoesntExist = true;
+      }
+    }
+
+    return true;
+  }
+
   bool OnKeyPressed(int keyCode) override {
     switch (keyCode) {
-      case KEY_UP: {
-        if (finder) {
-        }
-        break;
-      }
       case KEY_BACKSPACE: {
-        dirDoesntExist = false;
-        if (buf.IsEmpty()) {
-          if (path.has_parent_path()) {
-            finder = FinderState(path);
-            auto parentPath = path.parent_path();
-            if (parentPath == path && path.has_root_name()) {
-              auto elem = path.root_name();
-              buf = EditableUtf8String(elem.u8string());
-              path = std::filesystem::path();
-              fmt::print("reached root, editing path: '{}' buf: '{}'\n",
-                         path.u8string(), buf.c_str());
-            } else {
-              // Pop off last directory from the path
-              auto elem = path.filename();
-              buf = EditableUtf8String(elem.u8string());
-              path = parentPath;
-              fmt::print("editing path: '{}' buf: '{}'\n", path.u8string(),
-                         buf.c_str());
-            }
-
-            finder = FinderState(path);
-            finder->filter.Update(buf.c_str());
-            return true;
-          }
-        } else {
-          bool ctrlHeld = IsKeyDown(KEY_LEFT_CONTROL);
-          if (ctrlHeld) {
-            buf.Clear();
-          } else {
-            buf.DeleteChar();
-          }
-          finder->filter.Update(buf.c_str());
-          return true;
-        }
-        break;
+        return OnBackspace();
       }
       case KEY_TAB: {
-        if (buf.IsEmpty()) {
-          return false;
-        }
-
-        if (finder) {
-          std::filesystem::directory_entry entry;
-          bool hasEntry = false;
-
-          if (finder->filter.NumRemains() == 1) {
-            entry = finder->filter.GetRemainingEntry();
-            hasEntry = true;
-          } else if (finder->filter.TryGetExactMatch(entry)) {
-            hasEntry = true;
-          }
-
-          if (hasEntry) {
-            auto newPath = entry.path();
-            std::error_code ec;
-            auto status = std::filesystem::status(newPath, ec);
-            assert(!ec);
-            assert(status.type() == std::filesystem::file_type::directory);
-            path = newPath;
-            finder = FinderState(path);
-            buf.Clear();
-          }
-        } else {
-          auto newPath = path / std::string(buf.c_str());
-          std::error_code ec;
-          auto status = std::filesystem::status(newPath, ec);
-          if (!ec && status.type() == std::filesystem::file_type::directory) {
-            path = newPath;
-            finder = FinderState(path);
-            buf.Clear();
-          } else {
-            dirDoesntExist = true;
-          }
-        }
-
-        return true;
+        return OnTab();
       }
     }
 
@@ -524,7 +527,7 @@ struct PathInputBox : BaseInputBox {
   }
 };
 
-struct UI_InputBox {
+struct UI_InputWindow {
   enum { BUF_PATH = 0, BUF_FILENAME_PATTERN, BUF_PATTERN, BUF_MAX };
   std::unique_ptr<BaseInputBox> inputBoxes[BUF_MAX];
 
@@ -532,7 +535,7 @@ struct UI_InputBox {
   Font font;
   UI_RenderLayers *layers;
 
-  UI_InputBox() {
+  UI_InputWindow() {
     inputBoxes[BUF_PATH] = std::make_unique<PathInputBox>();
     inputBoxes[BUF_FILENAME_PATTERN] = std::make_unique<InputBox>();
     inputBoxes[BUF_PATTERN] = std::make_unique<InputBox>();
@@ -796,7 +799,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
   InitWindow(1280, 720, "boringrep");
   SetTargetFPS(60);
 
-  UI_InputBox inputBox = {};
+  UI_InputWindow inputBox = {};
 
   UI_RenderLayers layers;
 
@@ -807,7 +810,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
   PreviewState preview;
 
   auto cwd = std::filesystem::current_path().string();
-  inputBox.inputBoxes[UI_InputBox::BUF_PATH] =
+  inputBox.inputBoxes[UI_InputWindow::BUF_PATH] =
       std::make_unique<PathInputBox>(cwd);
 
   float scrollY = 0;
@@ -866,11 +869,12 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
 
         GrepRequest request;
         request.pathRoot =
-            inputBox.inputBoxes[UI_InputBox::BUF_PATH]->GetString();
+            inputBox.inputBoxes[UI_InputWindow::BUF_PATH]->GetString();
         request.patternFilename =
-            inputBox.inputBoxes[UI_InputBox::BUF_FILENAME_PATTERN]->GetString();
+            inputBox.inputBoxes[UI_InputWindow::BUF_FILENAME_PATTERN]
+                ->GetString();
         request.pattern =
-            inputBox.inputBoxes[UI_InputBox::BUF_PATTERN]->GetString();
+            inputBox.inputBoxes[UI_InputWindow::BUF_PATTERN]->GetString();
         dataSource->putRequest(user, std::move(request));
         break;
       }
