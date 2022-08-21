@@ -189,6 +189,7 @@ struct DirectoryFilter {
 };
 
 struct BaseInputBox {
+  virtual ~BaseInputBox() = default;
   bool isActive = false;
   bool isInvalid = false;
 
@@ -226,6 +227,7 @@ struct BaseInputBox {
 };
 
 struct InputBox : BaseInputBox {
+  ~InputBox() override = default;
   EditableUtf8String buf;
 
   std::string GetString() override { return buf.c_str(); }
@@ -276,6 +278,7 @@ struct FinderState {
 };
 
 struct PathInputBox : BaseInputBox {
+  ~PathInputBox() override = default;
   std::filesystem::path path;
 
   EditableUtf8String buf;
