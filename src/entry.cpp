@@ -389,7 +389,7 @@ static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
 
   constants.aborted = false;
 
-  for (uint32_t i = 0; i < 8; i++) {
+  for (uint32_t i = 0; i < std::thread::hardware_concurrency(); i++) {
     threads.push_back(std::thread(threadprocMatch, &constants, i));
   }
 
