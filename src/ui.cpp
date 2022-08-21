@@ -9,7 +9,7 @@
 #define RAYGUI_IMPLEMENTATION
 #include <raygui.h>
 
-#include <Tracy.hpp>
+#include "BTracy.hpp"
 
 #include "utf8.hpp"
 #include "win32.hpp"

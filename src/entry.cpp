@@ -20,7 +20,7 @@
 #include "pipe.hpp"
 #include "ui.hpp"
 
-#include <Tracy.hpp>
+#include "BTracy.hpp"
 
 enum {
   SIZ_INPUT_BACKLOG = 8,

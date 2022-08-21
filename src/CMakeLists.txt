@@ -26,6 +26,12 @@ target_link_libraries(boringrep
     Tracy::TracyClient
 )
 
+if(${BORINGREP_TRACY_ENABLE})
+  target_compile_definitions(boringrep PRIVATE -DBORINGREP_TRACY_ENABLE=1)
+else()
+  target_compile_definitions(boringrep PRIVATE -DBORINGREP_TRACY_ENABLE=0)
+endif()
+
 target_precompile_headers(boringrep
   PRIVATE
     <string>
