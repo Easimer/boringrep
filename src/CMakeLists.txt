@@ -6,6 +6,8 @@ target_sources(boringrep
     ui.cpp
     ui.hpp
     utf8.hpp
+    win32.cpp
+    win32.hpp
 )
 
 target_link_libraries(boringrep

@@ -11,6 +11,7 @@
 #include <Tracy.hpp>
 
 #include "utf8.hpp"
+#include "win32.hpp"
 
 enum Action {
   ACTION_NONE,
@@ -117,7 +118,19 @@ struct UI_RenderLayers {
 };
 
 struct DirectoryFilter {
-  DirectoryFilter(const std::filesystem::path &root) {
+  DirectoryFilter(std::filesystem::path root) {
+    if (root.empty()) {
+      auto drives = W32_GetLogicalDriveStrings();
+      if (drives.empty()) {
+        root = std::filesystem::path("/");
+      } else {
+        for (auto &drive : drives) {
+          subDirectories.push_back(std::filesystem::directory_entry(drive));
+        }
+        return;
+      }
+    }
+
     for (auto &entry : std::filesystem::directory_iterator(root)) {
       if (entry.is_directory()) {
         subDirectories.push_back(entry);
@@ -130,6 +143,10 @@ struct DirectoryFilter {
     for (size_t idxEntry = 0; idxEntry < subDirectories.size(); idxEntry++) {
       auto &entry = subDirectories[idxEntry];
       auto name = entry.path().filename().u8string();
+      if (name.empty()) {
+        // Filename is be empty when the entry refers to a Windows drive
+        name = entry.path().u8string();
+      }
       for (size_t i = 0; i < filter.size() && i < name.size(); i++) {
         if (name[i] != filter[i]) {
           filteredEntries.insert(idxEntry);
@@ -450,6 +467,10 @@ struct PathInputBox : BaseInputBox {
         continue;
       auto &entry = filter.subDirectories[i];
       auto path = entry.path().filename().u8string();
+      if (path.empty()) {
+        // Filename is be empty when the entry refers to a Windows drive
+        path = entry.path().u8string();
+      }
       auto t = MeasureTextEx(font, path.c_str(), TEXT_HEIGHT, 2);
 
       if (y + t.y >= rect.y + rect.height) {
