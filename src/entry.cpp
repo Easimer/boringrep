@@ -80,9 +80,10 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
 
       while (localInputQueue.size() < 2 && !constants->inputs.empty()) {
         auto &input = constants->inputs.front();
+        auto hasValue = input.has_value();
         localInputQueue.push(std::move(input));
         constants->inputs.pop();
-        if (!input) {
+        if (!hasValue) {
           // Found shutdown signal in shared queue
           break;
         }
