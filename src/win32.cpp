@@ -1,8 +1,9 @@
 #include "win32.hpp"
 
-#if _WIN32
-
+#if WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 
 std::vector<std::string> W32_GetLogicalDriveStrings() {

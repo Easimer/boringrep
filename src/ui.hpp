@@ -3,16 +3,16 @@
 #include <mutex>
 
 #include "data.hpp"
+#include "mmap.hpp"
 
 struct UI_File {
   std::string path;
   std::vector<Match> matches;
   std::vector<LineInfo> lineInfo;
 
-  const uint8_t *bufContent;
-  size_t lenContent;
-
   std::vector<std::string> uiCache;
+
+  MemoryMapHandle mmap = nullptr;
 };
 
 enum UI_MatchRequestStatus {

@@ -801,17 +801,25 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
           ZoneScoped;
           if (viewportTop <= y && y <= viewportBottom) {
             if (idxMatch >= file.uiCache.size()) {
+              if (file.mmap == nullptr) {
+                Mmap_Open(file.mmap, file.path);
+                // TODO(danielm): handle failure
+              }
+              assert(file.mmap != nullptr);
+              size_t len;
+              const void *contents = nullptr;
               assert(match.idxLine < file.lineInfo.size());
-              assert(match.offStart < file.lenContent);
-              assert(match.offEnd <= file.lenContent);
               auto &line = file.lineInfo[match.idxLine];
-              fmt::string_view lineContent(
-                  (char *)file.bufContent + line.offStart,
-                  line.offEnd - line.offStart - 1);
+              Mmap_Map(contents, len, file.mmap, line.offStart,
+                       line.offEnd - line.offStart);
+              assert(contents != nullptr);
+              fmt::string_view lineContent((const char *)contents,
+                                           line.offEnd - line.offStart - 1);
               file.uiCache.resize(idxMatch + 1);
               assert(idxMatch < file.uiCache.size());
               file.uiCache[idxMatch] =
                   fmt::format("  L#{}: '{}'\n", match.idxLine + 1, lineContent);
+              Mmap_Unmap(file.mmap);
             }
             auto width = MeasureText(file.uiCache[idxMatch].c_str(), 10);
             DrawText(file.uiCache[idxMatch].c_str(), 10, y - scrollY, 10,
@@ -828,6 +836,10 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
             bottomRendered = false;
             break;
           }
+        }
+
+        if (file.mmap != nullptr) {
+          Mmap_Close(file.mmap);
         }
 
         if (y > viewportBottom) {

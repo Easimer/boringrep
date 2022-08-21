@@ -1,4 +1,8 @@
+if (WIN32)
+add_executable(boringrep WIN32)
+else()
 add_executable(boringrep)
+endif()
 
 target_sources(boringrep
     PRIVATE
@@ -8,6 +12,8 @@ target_sources(boringrep
     utf8.hpp
     win32.cpp
     win32.hpp
+    mmap.cpp
+    mmap.hpp
 )
 
 target_link_libraries(boringrep

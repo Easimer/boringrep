@@ -14,9 +14,9 @@
 #include <thread>
 
 #include <fmt/core.h>
-#include <mio/mmap.hpp>
 
 #include "data.hpp"
+#include "mmap.hpp"
 #include "pipe.hpp"
 #include "ui.hpp"
 
@@ -32,14 +32,13 @@ struct MatchThreadInput {
 
 struct MatchThreadResult {
   std::string path;
-  mio::mmap_source content;
+  size_t sizContents;
   std::vector<Match> matches;
   std::vector<LineInfo> lineInfo;
 };
 
 struct MatchRequestStateAndContent {
   UI_MatchRequestState state;
-  std::unordered_map<std::string, mio::mmap_source> sources;
 };
 
 struct MatchThreadConstants {
@@ -103,15 +102,19 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
     }
 
     std::error_code error;
-    mio::mmap_source mmap;
+    MemoryMapHandle mmap;
+    auto mmapRc = Mmap_Open(mmap, input->path);
 
-    {
-      ZoneScopedN("mmap'ing");
-      mmap.map(input->path, error);
-      if (error) {
-        fmt::print("mmap failure {} {}\n", input->path, error.message());
-        continue;
-      }
+    if (mmapRc != Mmap_OK) {
+      continue;
+    }
+
+    const void *pContents;
+    size_t lenContents;
+    mmapRc = Mmap_Map(pContents, lenContents, mmap);
+
+    if (mmapRc != Mmap_OK) {
+      continue;
     }
 
     auto *matchData =
@@ -121,13 +124,12 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
     std::vector<Match> matches;
 
     std::vector<LineInfo> lineInfos;
-    const auto *pContents = (uint8_t *)mmap.data();
 
     {
       ZoneScopedN("Match loop");
       ZoneText(input->path.c_str(), input->path.size());
       do {
-        rc = pcre2_match_w(constants->pattern, pContents, mmap.size(), offset,
+        rc = pcre2_match_w(constants->pattern, pContents, lenContents, offset,
                            PCRE2_NOTBOL | PCRE2_NOTEOL | PCRE2_NOTEMPTY,
                            matchData);
         if (rc < 0) {
@@ -142,13 +144,13 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
           if (lineInfos.empty()) {
             ZoneScopedN("Compute line info");
             size_t offCursor = 0;
-            const size_t offEnd = mmap.size();
+            const size_t offEnd = lenContents;
 
             LineInfo currentLine;
             currentLine.offStart = offCursor;
 
             while (offCursor != offEnd) {
-              if (pContents[offCursor] == '\n') {
+              if (((const uint8_t *)pContents)[offCursor] == '\n') {
                 currentLine.offEnd = offCursor;
                 lineInfos.push_back(currentLine);
                 currentLine.offStart = offCursor + 1;
@@ -201,7 +203,7 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
           // TODO(danielm): groups
           for (int i = 0; i < rc; i++) {
             PCRE2_SPTR substring_start =
-                (PCRE2_SPTR8)mmap.data() + ovector[2 * i];
+                (PCRE2_SPTR8)pContents + ovector[2 * i];
             PCRE2_SIZE substring_length = ovector[2 * i + 1] - ovector[2 * i];
 
             auto s =
@@ -209,8 +211,8 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
           }
 
           assert(m.idxLine < lineInfos.size());
-          assert(m.offStart < mmap.size());
-          assert(m.offEnd <= mmap.size());
+          assert(m.offStart < lenContents);
+          assert(m.offEnd <= lenContents);
           matches.push_back(m);
 
           offset = ovector[1];
@@ -223,12 +225,13 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
       } while (rc > 0);
     }
 
+    Mmap_Close(mmap);
+
     pcre2_match_data_free(matchData);
 
     if (matches.size() > 0) {
       ZoneScopedN("Pushing results");
       MatchThreadResult result;
-      result.content = std::move(mmap);
       result.path = std::move(input->path);
       result.matches = std::move(matches);
       result.lineInfo = std::move(lineInfos);
@@ -449,17 +452,14 @@ static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
 
         for (auto &match : result->matches) {
           assert(match.idxLine < result->lineInfo.size());
-          assert(match.offStart < result->content.size());
-          assert(match.offEnd <= result->content.size());
+          assert(match.offStart < result->sizContents);
+          assert(match.offEnd <= result->sizContents);
         }
 
         UI_File file;
         file.path = std::move(result->path);
-        file.bufContent = (uint8_t *)result->content.data();
-        file.lenContent = result->content.size();
         file.lineInfo = std::move(result->lineInfo);
         file.matches = std::move(result->matches);
-        S.sources[file.path] = std::move(result->content);
         std::lock_guard G(S.state.lockFiles);
         S.state.files.push_back(file);
       }
@@ -566,5 +566,19 @@ int main(int argc, char **argv) {
   }
 
   UI_Finish();
+
+  Mmap_CheckLeaks();
   return 0;
 }
+
+#if WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+int APIENTRY WinMain(HINSTANCE hInstance,
+                     HINSTANCE hPrevInstance,
+                     LPSTR lpCmdLine,
+                     int nShowCmd) {
+  char *argv[1] = {};
+  return main(0, argv);
+}
+#endif
