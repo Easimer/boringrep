@@ -23,4 +23,8 @@ struct Pipe {
   auto push(T &&t) { queue.push(std::move(t)); }
   auto push() { queue.push(std::nullopt); }
   auto notify_all() { cv.notify_all(); }
+  template <typename Duration>
+  auto wait_for(std::unique_lock<LockableBase(std::mutex)> &L, Duration dur) {
+    cv.wait_for(L, dur);
+  }
 };
