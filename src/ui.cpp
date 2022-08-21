@@ -640,7 +640,13 @@ struct UI_InputBox {
             ret = ACTION_APPLY;
             break;
           case KEY_TAB:
-            SetEditedField((*idxEditedField + 1) % BUF_MAX);
+            if (IsKeyDown(KEY_LEFT_SHIFT)) {
+              auto idxPrevField =
+                  (*idxEditedField == 0) ? BUF_MAX - 1 : (*idxEditedField - 1);
+              SetEditedField(idxPrevField);
+            } else {
+              SetEditedField((*idxEditedField + 1) % BUF_MAX);
+            }
             break;
         }
         keyPressed = GetKeyPressed();
