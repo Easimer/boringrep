@@ -1,6 +1,4 @@
 [requires]
-hedley/15
-libuv/1.41.1
 raylib/4.0.0
 pcre2/10.40
 mio/cci.20201220
@@ -10,6 +8,4 @@ fmt/9.0.0
 cmake_multi
     
 [options]
-glad:shared=False
-glad:gl_profile=core
-glad:gl_version=4.5
+
