@@ -46,53 +46,6 @@ enum {
   LEN_BUF_PATTERN = 1024,
 };
 
-struct UI_Messages {
-  Font font = {};
-
-  void Push(const std::string &message,
-            double time = 1.0,
-            Color color = RAYWHITE) {
-    if (messages.size() == 8) {
-      messages.pop_front();
-    }
-
-    auto start = GetTime();
-    messages.push_back({message, start, start + time, color});
-  }
-
-  void PushError(const std::string &message) { Push(message, 5.0f, RED); }
-
-  void Draw() {
-    auto cur = messages.begin();
-    auto time = GetTime();
-    while (cur != messages.end()) {
-      if (cur->timeEnd <= time) {
-        cur = messages.erase(cur);
-      } else {
-        ++cur;
-      }
-    }
-
-    float y = 0;
-    for (auto &msg : messages) {
-      auto v = MeasureTextEx(font, msg.message.c_str(), TEXT_HEIGHT, 2);
-      DrawRectangle(4, y, v.x + 8, v.y + 8, msg.color);
-      DrawRectangleLines(4, y, v.x + 8, v.y + 4, BLACK);
-      DrawTextEx(font, msg.message.c_str(), {8, y + 4}, TEXT_HEIGHT, 2, BLACK);
-      y += v.y + PADDING_HORI;
-    }
-  }
-
-  struct Message {
-    std::string message;
-    double timeStart;
-    double timeEnd;
-    Color color;
-  };
-
-  std::deque<Message> messages;
-};
-
 struct PreviewState {
   std::optional<std::string> contents;
   size_t idxMatch;
@@ -841,14 +794,12 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
   SetTargetFPS(60);
 
   UI_InputBox inputBox = {};
-  UI_Messages messages;
 
   UI_RenderLayers layers;
 
   inputBox.layers = &layers;
   inputBox.font =
       LoadFontEx("sarasa-mono-j-regular.ttf", TEXT_HEIGHT, 0, 0x10000);
-  messages.font = inputBox.font;
 
   PreviewState preview;
 
@@ -947,7 +898,6 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
       DrawResults(state, inputBox.font, scrollY, preview);
     }
 
-    messages.Draw();
     FrameMark;
     EndDrawing();
   }
