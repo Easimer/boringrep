@@ -10,6 +10,7 @@ struct MemoryMap_t {
 };
 
 #if !defined(NDEBUG)
+std::mutex gHandlesLock;
 std::unordered_set<MemoryMapHandle> gHandles;
 #endif
 
@@ -30,7 +31,10 @@ MemoryMapStatus Mmap_Open(MemoryMapHandle &out, const std::string &path) {
   out = ret;
 
 #if !defined(NDEBUG)
-  gHandles.insert(ret);
+  {
+    std::lock_guard G(gHandlesLock);
+    gHandles.insert(ret);
+  }
 #endif
 
   return Mmap_OK;
@@ -57,8 +61,7 @@ MemoryMapStatus Mmap_Map(const void *&buf,
   }
 
   if (rc) {
-    fmt::print("mmap failure '{}' rc={} msg={}\n", file->path, rc.value(),
-               rc.message());
+    printf("mmap failure '%s' rc=%d\n", file->path.c_str(), rc.value());
     return Mmap_Failure;
   }
 
@@ -86,7 +89,10 @@ MemoryMapStatus Mmap_Close(MemoryMapHandle &file) {
     return Mmap_InvalidHandle;
   }
 #if !defined(NDEBUG)
-  gHandles.erase(file);
+  {
+    std::lock_guard G(gHandlesLock);
+    gHandles.erase(file);
+  }
 #endif
 
   delete file;
