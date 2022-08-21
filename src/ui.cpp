@@ -804,8 +804,14 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
   UI_RenderLayers layers;
 
   inputBox.layers = &layers;
+#if _WIN32
   inputBox.font =
-      LoadFontEx("sarasa-mono-j-regular.ttf", TEXT_HEIGHT, 0, 0x10000);
+      LoadFontEx("C:\\Windows\\Fonts\\consola.ttf", TEXT_HEIGHT, 0, 0x10000);
+#else
+  inputBox.font =
+      LoadFontEx("/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+                 TEXT_HEIGHT, 0, 0x10000);
+#endif
 
   PreviewState preview;
 
