@@ -42,7 +42,7 @@ struct MatchRequestStateAndContent {
 };
 
 struct MatchThreadConstants {
-  pcre2_code *pattern;
+  pcre2_code *pattern = nullptr;
   std::atomic<bool> aborted;
 
   Pipe<MatchThreadInput> inputs;
@@ -255,8 +255,8 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
 }
 
 struct PathMatcher {
-  pcre2_code *code = nullptr;
-  pcre2_match_data *matchData = nullptr;
+  pcre2_code *code;
+  pcre2_match_data *matchData;
   PathMatcher(pcre2_code *code, pcre2_match_data *matchData)
       : code(code), matchData(matchData) {}
 

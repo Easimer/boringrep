@@ -535,7 +535,7 @@ struct UI_InputWindow {
   Font font;
   UI_RenderLayers *layers;
 
-  UI_InputWindow() {
+  UI_InputWindow() : idxEditedField(std::nullopt), font({}), layers(nullptr) {
     inputBoxes[BUF_PATH] = std::make_unique<PathInputBox>();
     inputBoxes[BUF_FILENAME_PATTERN] = std::make_unique<InputBox>();
     inputBoxes[BUF_PATTERN] = std::make_unique<InputBox>();
