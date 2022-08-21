@@ -141,6 +141,8 @@ struct DirectoryFilter {
 
   void Update(const std::string &filter) {
     filteredEntries.clear();
+    notFilteredEntries.clear();
+    exactMatches.clear();
     for (size_t idxEntry = 0; idxEntry < subDirectories.size(); idxEntry++) {
       auto &entry = subDirectories[idxEntry];
       auto name = entry.path().filename().u8string();
@@ -148,11 +150,19 @@ struct DirectoryFilter {
         // Filename is be empty when the entry refers to a Windows drive
         name = entry.path().u8string();
       }
+      bool filtered = false;
       for (size_t i = 0; i < filter.size() && i < name.size(); i++) {
         if (name[i] != filter[i]) {
           filteredEntries.insert(idxEntry);
+          filtered = true;
           break;
         }
+      }
+      if (!filtered) {
+        if (name.size() == filter.size()) {
+          exactMatches.insert(idxEntry);
+        }
+        notFilteredEntries.insert(idxEntry);
       }
     }
   }
@@ -195,17 +205,26 @@ struct DirectoryFilter {
   std::filesystem::directory_entry GetRemainingEntry() const {
     assert(NumRemains() == 1);
     //
-    for (size_t i = 0; i < subDirectories.size(); i++) {
-      if (filteredEntries.count(i) == 0) {
-        return subDirectories[i];
-      }
+    for (auto idxEntry : notFilteredEntries) {
+      return subDirectories[idxEntry];
     }
 
     std::abort();
   }
 
+  bool TryGetExactMatch(std::filesystem::directory_entry &out) {
+    for (auto idxEntry : exactMatches) {
+      out = subDirectories[idxEntry];
+      return true;
+    }
+
+    return false;
+  }
+
   std::vector<std::filesystem::directory_entry> subDirectories;
   std::unordered_set<size_t> filteredEntries;
+  std::unordered_set<size_t> notFilteredEntries;
+  std::unordered_set<size_t> exactMatches;
 };
 
 struct BaseInputBox {
@@ -389,9 +408,17 @@ struct PathInputBox : BaseInputBox {
         }
 
         if (finder) {
-          if (finder->filter.NumRemains() == 1) {
-            auto entry = finder->filter.GetRemainingEntry();
+          std::filesystem::directory_entry entry;
+          bool hasEntry = false;
 
+          if (finder->filter.NumRemains() == 1) {
+            entry = finder->filter.GetRemainingEntry();
+            hasEntry = true;
+          } else if (finder->filter.TryGetExactMatch(entry)) {
+            hasEntry = true;
+          }
+
+          if (hasEntry) {
             auto newPath = entry.path();
             std::error_code ec;
             auto status = std::filesystem::status(newPath, ec);
