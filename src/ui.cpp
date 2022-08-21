@@ -47,7 +47,7 @@ enum {
 };
 
 struct UI_Messages {
-  Font font;
+  Font font = {};
 
   void Push(const std::string &message,
             double time = 1.0,
@@ -91,6 +91,14 @@ struct UI_Messages {
   };
 
   std::deque<Message> messages;
+};
+
+struct PreviewState {
+  std::optional<std::string> contents;
+  size_t idxMatch;
+  std::string path;
+
+  Vector2 position;
 };
 
 using UI_RenderFunction = std::function<void()>;
@@ -684,7 +692,10 @@ struct UI_InputBox {
   }
 };
 
-static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
+static void DrawResults(UI_MatchRequestState *state,
+                        const Font &font,
+                        float &scrollY,
+                        PreviewState &preview) {
   ZoneScoped;
 
   const int top = 256;
@@ -699,6 +710,7 @@ static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
   DrawRectangleLines(0, top, GetScreenWidth(), bottom - top, BLACK);
 
   auto L = std::unique_lock<std::mutex>(state->lockFiles);
+  bool mouseWasHoveringAboveALine = false;
 
   auto &files = state->files;
   for (auto &file : files) {
@@ -706,10 +718,6 @@ static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
     auto width = MeasureText(file.path.c_str(), 10);
     if (viewportTop <= y && y <= viewportBottom) {
       DrawText(file.path.c_str(), 0, y - scrollY, 10, DARKGRAY);
-    } else {
-#if DEBUG_TEXT_CLIPPING
-      DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
-#endif
     }
     y += 16;
     size_t idxMatch = 0;
@@ -737,13 +745,54 @@ static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
               fmt::format("  L#{}: '{}'\n", match.idxLine + 1, lineContent);
           Mmap_Unmap(file.mmap);
         }
-        auto width = MeasureText(file.uiCache[idxMatch].c_str(), 10);
+        auto tm = MeasureTextEx(GetFontDefault(),
+                                file.uiCache[idxMatch].c_str(), 10, 2);
         DrawText(file.uiCache[idxMatch].c_str(), 10, y - scrollY, 10, BLACK);
-      } else {
-#if DEBUG_TEXT_CLIPPING
-        DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
-#endif
+
+        // Test for cursor hover and draw the line context
+        Rectangle rectLine;
+        rectLine.x = 10;
+        rectLine.width = tm.x;
+        rectLine.y = y - scrollY;
+        rectLine.height = 16;
+        auto cursor = GetMousePosition();
+        if (CheckCollisionPointRec(cursor, rectLine)) {
+          mouseWasHoveringAboveALine = true;
+          if (preview.path != file.path || preview.idxMatch != idxMatch) {
+            preview.contents.reset();
+          }
+
+          if (!preview.contents) {
+            if (file.mmap == nullptr) {
+              Mmap_Open(file.mmap, file.path);
+              // TODO(danielm): handle failure
+            }
+            assert(file.mmap != nullptr);
+            size_t len;
+            const void *contents = nullptr;
+            size_t idxFirstLine =
+                match.idxLine > 2 ? match.idxLine - 2 : match.idxLine;
+            size_t idxLastLine =
+                std::min(match.idxLine + 2, file.lineInfo.size() - 1);
+            auto &firstLine = file.lineInfo[idxFirstLine];
+            auto &lastLine = file.lineInfo[idxLastLine];
+            assert(firstLine.offStart <= lastLine.offEnd);
+            Mmap_Map(contents, len, file.mmap, firstLine.offStart,
+                     lastLine.offEnd - firstLine.offStart);
+            assert(contents != nullptr);
+            std::string lineContent((const char *)contents,
+                                    lastLine.offEnd - firstLine.offStart);
+            std::replace(lineContent.begin(), lineContent.end(), '\r', ' ');
+            preview.contents = lineContent;
+            preview.idxMatch = idxMatch;
+            preview.path = file.path;
+            Mmap_Unmap(file.mmap);
+          }
+
+          preview.position = cursor;
+        }
       }
+
       y += 16;
       idxMatch++;
 
@@ -767,6 +816,17 @@ static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
     float maxY = y;
     scrollY = std::min(scrollY, maxY);
   }
+
+  if (!mouseWasHoveringAboveALine) {
+    preview.contents.reset();
+  }
+
+  if (preview.contents) {
+    auto pos = preview.position;
+    auto tm = MeasureTextEx(font, preview.contents->c_str(), TEXT_HEIGHT, 2);
+    DrawRectangle(pos.x, pos.y, tm.x, tm.y, GRAY);
+    DrawTextEx(font, preview.contents->c_str(), pos, TEXT_HEIGHT, 2, BLACK);
+  }
 }
 
 static void threadprocUi(UI_DataSource *dataSource, void *user) {
@@ -784,7 +844,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
       LoadFontEx("sarasa-mono-j-regular.ttf", TEXT_HEIGHT, 0, 0x10000);
   messages.font = inputBox.font;
 
-  messages.Push("Hi!");
+  PreviewState preview;
 
   auto cwd = std::filesystem::current_path().string();
   inputBox.inputBoxes[UI_InputBox::BUF_PATH] =
@@ -878,7 +938,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
         scrollVel = 0.0f;
       }
 
-      DrawResults(state, scrollY);
+      DrawResults(state, inputBox.font, scrollY, preview);
     }
 
     messages.Draw();
