@@ -110,14 +110,14 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
     }
 
     const void *pContents;
-    size_t lenContents;
-    mmapRc = Mmap_Map(pContents, lenContents, mmap);
+    size_t sizContents;
+    mmapRc = Mmap_Map(pContents, sizContents, mmap);
 
     if (mmapRc != Mmap_OK) {
       continue;
     }
 
-    if (lenContents > 100 * 1024 * 1024) {
+    if (sizContents > 100 * 1024 * 1024) {
       Mmap_Close(mmap);
       continue;
     }
@@ -134,7 +134,7 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
       ZoneScopedN("Match loop");
       ZoneText(input->path.c_str(), input->path.size());
       do {
-        rc = pcre2_match_w(constants->pattern, pContents, lenContents, offset,
+        rc = pcre2_match_w(constants->pattern, pContents, sizContents, offset,
                            PCRE2_NOTBOL | PCRE2_NOTEOL | PCRE2_NOTEMPTY,
                            matchData);
         if (rc < 0) {
@@ -149,7 +149,7 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
           if (lineInfos.empty()) {
             ZoneScopedN("Compute line info");
             size_t offCursor = 0;
-            const size_t offEnd = lenContents;
+            const size_t offEnd = sizContents;
 
             LineInfo currentLine;
             currentLine.offStart = offCursor;
@@ -218,8 +218,8 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
           }
 
           assert(m.idxLine < lineInfos.size());
-          assert(m.offStart < lenContents);
-          assert(m.offEnd <= lenContents);
+          assert(m.offStart < sizContents);
+          assert(m.offEnd <= sizContents);
           matches.push_back(m);
 
           offset = ovector[1];
@@ -240,6 +240,7 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
       ZoneScopedN("Pushing results");
       MatchThreadResult result;
       result.path = std::move(input->path);
+      result.sizContents = sizContents;
       result.matches = std::move(matches);
       result.lineInfo = std::move(lineInfos);
       auto L = constants->results.lock();
