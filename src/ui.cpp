@@ -663,7 +663,7 @@ static void DrawResults(UI_MatchRequestState *state,
                         PreviewState &preview) {
   ZoneScoped;
 
-  const int top = 256;
+  const int top = 128;
   const int bottom = GetScreenHeight();
 
   const int viewportTop = top + scrollY;
@@ -796,7 +796,7 @@ static void DrawResults(UI_MatchRequestState *state,
 
 static void threadprocUi(UI_DataSource *dataSource, void *user) {
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-  InitWindow(1280, 720, "boringrep");
+  InitWindow(540, 580, "boringrep");
   SetTargetFPS(60);
 
   UI_InputWindow inputBox = {};
