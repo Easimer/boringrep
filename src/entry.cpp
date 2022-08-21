@@ -43,7 +43,7 @@ struct MatchRequestStateAndContent {
 
 struct MatchThreadConstants {
   pcre2_code *pattern;
-  bool aborted;
+  std::atomic<bool> aborted;
 
   Pipe<MatchThreadInput> inputs;
   Pipe<MatchThreadResult> results;
@@ -96,7 +96,7 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
     auto input = std::move(localInputQueue.front());
     localInputQueue.pop();
 
-    if (!input) {
+    if (!input || constants->aborted) {
       shutdown = true;
       break;
     }
@@ -114,6 +114,11 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
     mmapRc = Mmap_Map(pContents, lenContents, mmap);
 
     if (mmapRc != Mmap_OK) {
+      continue;
+    }
+
+    if (lenContents > 100 * 1024 * 1024) {
+      Mmap_Close(mmap);
       continue;
     }
 
@@ -186,7 +191,9 @@ static void threadprocMatch(MatchThreadConstants *constants, uint32_t id) {
             while (idxLeft <= idxRight) {
               idxMiddle = (idxLeft + idxRight) / 2;
               line = &lineInfos[idxMiddle];
-              if (m.offStart < line->offStart) {
+              if (idxLeft == idxMiddle || idxRight == idxMiddle) {
+                break;
+              } else if (m.offStart < line->offStart) {
                 idxRight = idxMiddle;
               } else if (line->offEnd < m.offStart) {
                 idxLeft = idxMiddle;
@@ -402,9 +409,19 @@ static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
         }
 
         if (entry.is_regular_file()) {
+          if (entry.file_size() > 1 * 1024 * 1024 * 1024) {
+            // Skip files bigger than 1GiB
+            continue;
+          }
           if (pathMatcher->Matches(entry.path().filename())) {
             inputBacklog.push_back({entry.path().u8string()});
           }
+        }
+
+        if (S.state.status == UI_MRSAborted) {
+          constants.aborted = true;
+          fmt::print("[main thread] status became aborted\n");
+          break;
         }
 
         if (inputBacklog.size() == threads.size()) {
@@ -417,13 +434,21 @@ static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
         }
       }
       paths.pop();
+
+      if (S.state.status == UI_MRSAborted) {
+        constants.aborted = true;
+        fmt::print("[main thread] status became aborted\n");
+        break;
+      }
     }
 
-    auto L = constants.inputs.lock();
-    if (inputBacklog.size() > 0) {
-      while (!inputBacklog.empty()) {
-        constants.inputs.push(std::move(inputBacklog.back()));
-        inputBacklog.pop_back();
+    if (S.state.status != UI_MRSAborted) {
+      auto L = constants.inputs.lock();
+      if (inputBacklog.size() > 0) {
+        while (!inputBacklog.empty()) {
+          constants.inputs.push(std::move(inputBacklog.back()));
+          inputBacklog.pop_back();
+        }
       }
     }
     for (auto &thread : threads) {
@@ -437,9 +462,14 @@ static UI_MatchRequestStatus DoGrep(MatchRequestStateAndContent &S,
   {
     ZoneScopedN("Receiving results");
     while (numThreadsRemain != 0) {
+      if (S.state.status == UI_MRSAborted) {
+        constants.aborted = true;
+        fmt::print("[main thread] status became aborted\n");
+        break;
+      }
       auto L = constants.results.lock();
       if (constants.results.empty()) {
-        constants.results.wait(L);
+        constants.results.wait_for(L, std::chrono::milliseconds(1));
       }
       if (!constants.results.empty()) {
         auto result = std::move(constants.results.front());

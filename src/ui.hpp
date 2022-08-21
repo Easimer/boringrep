@@ -25,7 +25,7 @@ enum UI_MatchRequestStatus {
 };
 
 struct UI_MatchRequestState {
-  UI_MatchRequestStatus status;
+  std::atomic<UI_MatchRequestStatus> status;
   std::mutex lockFiles;
   std::vector<UI_File> files;
 };

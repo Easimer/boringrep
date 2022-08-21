@@ -1,5 +1,6 @@
 #include "ui.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <map>
 #include <unordered_set>
@@ -559,7 +560,7 @@ struct UI_InputBox {
     }
   }
 
-  Action Draw(const UI_MatchRequestState *state, Vector2 pos, Vector2 size) {
+  Action Draw(UI_MatchRequestState *state, Vector2 pos, Vector2 size) {
     Action ret = ACTION_NONE;
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (idxEditedField) {
@@ -630,6 +631,17 @@ struct UI_InputBox {
     for (int i = 0; i < BUF_MAX; i++) {
       auto rect = GetButtonRect(pos, size, i);
       inputBoxes[i]->Draw(*layers, font, rect);
+    }
+
+    {
+      auto rect = GetButtonRect(pos, size, BUF_MAX);
+      rect.width = std::min(64, GetScreenWidth() / 4);
+      if (GuiButton(rect, "Abort")) {
+        if (state) {
+          auto expected = UI_MRSPending;
+          state->status.compare_exchange_strong(expected, UI_MRSAborted);
+        }
+      }
     }
 
     return ret;
