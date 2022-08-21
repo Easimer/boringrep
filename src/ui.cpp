@@ -659,6 +659,91 @@ struct UI_InputBox {
   }
 };
 
+static void DrawResults(UI_MatchRequestState *state, float &scrollY) {
+  ZoneScoped;
+
+  const int top = 256;
+  const int bottom = GetScreenHeight();
+
+  const int viewportTop = top + scrollY;
+  const int viewportBottom = bottom + scrollY;
+
+  int y = top;
+  bool bottomRendered = true;
+
+  DrawRectangleLines(0, top, GetScreenWidth(), bottom - top, BLACK);
+
+  auto L = std::unique_lock<std::mutex>(state->lockFiles);
+
+  auto &files = state->files;
+  for (auto &file : files) {
+    ZoneScoped;
+    auto width = MeasureText(file.path.c_str(), 10);
+    if (viewportTop <= y && y <= viewportBottom) {
+      DrawText(file.path.c_str(), 0, y - scrollY, 10, DARKGRAY);
+    } else {
+#if DEBUG_TEXT_CLIPPING
+      DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
+#endif
+    }
+    y += 16;
+    size_t idxMatch = 0;
+    for (auto &match : file.matches) {
+      ZoneScoped;
+      if (viewportTop <= y && y <= viewportBottom) {
+        if (idxMatch >= file.uiCache.size()) {
+          if (file.mmap == nullptr) {
+            Mmap_Open(file.mmap, file.path);
+            // TODO(danielm): handle failure
+          }
+          assert(file.mmap != nullptr);
+          size_t len;
+          const void *contents = nullptr;
+          assert(match.idxLine < file.lineInfo.size());
+          auto &line = file.lineInfo[match.idxLine];
+          Mmap_Map(contents, len, file.mmap, line.offStart,
+                   line.offEnd - line.offStart);
+          assert(contents != nullptr);
+          fmt::string_view lineContent((const char *)contents,
+                                       line.offEnd - line.offStart - 1);
+          file.uiCache.resize(idxMatch + 1);
+          assert(idxMatch < file.uiCache.size());
+          file.uiCache[idxMatch] =
+              fmt::format("  L#{}: '{}'\n", match.idxLine + 1, lineContent);
+          Mmap_Unmap(file.mmap);
+        }
+        auto width = MeasureText(file.uiCache[idxMatch].c_str(), 10);
+        DrawText(file.uiCache[idxMatch].c_str(), 10, y - scrollY, 10, BLACK);
+      } else {
+#if DEBUG_TEXT_CLIPPING
+        DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
+#endif
+      }
+      y += 16;
+      idxMatch++;
+
+      if (y > viewportBottom) {
+        bottomRendered = false;
+        break;
+      }
+    }
+
+    if (file.mmap != nullptr) {
+      Mmap_Close(file.mmap);
+    }
+
+    if (y > viewportBottom) {
+      bottomRendered = false;
+      break;
+    }
+  }
+
+  if (bottomRendered) {
+    float maxY = y;
+    scrollY = std::min(scrollY, maxY);
+  }
+}
+
 static void threadprocUi(UI_DataSource *dataSource, void *user) {
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(1280, 720, "boringrep");
@@ -756,11 +841,6 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
 
     state = dataSource->getCurrentState(user);
     if (state) {
-      ZoneScoped;
-
-      const int top = 256;
-      const int bottom = GetScreenHeight();
-
       scrollVel = scrollVel + 5 * GetMouseWheelMove();
       if (scrollVel != 0) {
         scrollVel -= GetFrameTime() * 0.5f * scrollVel;
@@ -773,85 +853,7 @@ static void threadprocUi(UI_DataSource *dataSource, void *user) {
         scrollVel = 0.0f;
       }
 
-      const int viewportTop = top + scrollY;
-      const int viewportBottom = bottom + scrollY;
-
-      int y = top;
-      bool bottomRendered = true;
-
-      DrawRectangleLines(10, top, GetScreenWidth() - 20, bottom - top - 10,
-                         BLACK);
-
-      auto L = std::unique_lock<std::mutex>(state->lockFiles);
-
-      auto &files = state->files;
-      for (auto &file : files) {
-        ZoneScoped;
-        auto width = MeasureText(file.path.c_str(), 10);
-        if (viewportTop <= y && y <= viewportBottom) {
-          DrawText(file.path.c_str(), 10, y - scrollY, 10, DARKGRAY);
-        } else {
-#if DEBUG_TEXT_CLIPPING
-          DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
-#endif
-        }
-        y += 16;
-        size_t idxMatch = 0;
-        for (auto &match : file.matches) {
-          ZoneScoped;
-          if (viewportTop <= y && y <= viewportBottom) {
-            if (idxMatch >= file.uiCache.size()) {
-              if (file.mmap == nullptr) {
-                Mmap_Open(file.mmap, file.path);
-                // TODO(danielm): handle failure
-              }
-              assert(file.mmap != nullptr);
-              size_t len;
-              const void *contents = nullptr;
-              assert(match.idxLine < file.lineInfo.size());
-              auto &line = file.lineInfo[match.idxLine];
-              Mmap_Map(contents, len, file.mmap, line.offStart,
-                       line.offEnd - line.offStart);
-              assert(contents != nullptr);
-              fmt::string_view lineContent((const char *)contents,
-                                           line.offEnd - line.offStart - 1);
-              file.uiCache.resize(idxMatch + 1);
-              assert(idxMatch < file.uiCache.size());
-              file.uiCache[idxMatch] =
-                  fmt::format("  L#{}: '{}'\n", match.idxLine + 1, lineContent);
-              Mmap_Unmap(file.mmap);
-            }
-            auto width = MeasureText(file.uiCache[idxMatch].c_str(), 10);
-            DrawText(file.uiCache[idxMatch].c_str(), 10, y - scrollY, 10,
-                     BLACK);
-          } else {
-#if DEBUG_TEXT_CLIPPING
-            DrawRectangleLines(10, y - scrollY, width, 10, BLACK);
-#endif
-          }
-          y += 16;
-          idxMatch++;
-
-          if (y > viewportBottom) {
-            bottomRendered = false;
-            break;
-          }
-        }
-
-        if (file.mmap != nullptr) {
-          Mmap_Close(file.mmap);
-        }
-
-        if (y > viewportBottom) {
-          bottomRendered = false;
-          break;
-        }
-      }
-
-      if (bottomRendered) {
-        float maxY = y;
-        scrollY = std::min(scrollY, maxY);
-      }
+      DrawResults(state, scrollY);
     }
 
     messages.Draw();
